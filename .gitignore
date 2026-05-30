@@ -1,0 +1,61 @@
+# ─── Environment & secrets ──────────────────────────────────
+.env
+.env.*
+!.env.example
+**/api-keys.json
+**/api-keys*.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.sqlite
+*.db
+
+# ─── Logs ───────────────────────────────────────────────────
+logs/
+*.log
+*-log.txt
+publish-log.txt
+scripts/logs/
+
+# ─── OS / Editor ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.bak
+
+# ─── Python ─────────────────────────────────────────────────
+scripts/__pycache__/
+scripts/youtube/__pycache__/
+scripts/tiktok/__pycache__/
+scripts/shared/__pycache__/
+*.pyc
+
+# ─── Google / OAuth / TikTok session (NEVER commit) ───────────
+scripts/google-credentials.json
+scripts/*.json
+scripts/.env
+scripts/youtube/.secrets/
+scripts/youtube/**/token.json
+scripts/youtube/**/client_secret*.json
+scripts/browser-profile/
+scripts/browser-profile-tiktok/
+scripts/browser-profile-*/
+**/storage_state*.json
+**/tiktok_storage_state.json
+**/.secrets/
+
+# ─── Pipeline locks & local media ─────────────────────────────
+scripts/youtube/.pipeline.lock
+scripts/tiktok/.pipeline.lock
+**/pipeline.lock
+**/.pipeline.lock
+/clips/
+/inbox/
+**/tiktok_debug/
+
+# ─── Cursor local ───────────────────────────────────────────
+.cursor/

@@ -1,0 +1,24 @@
+# Copie para E:/YOUTUBE/inbox/batch.yaml (ou passe com --batch)
+# Hashtags são anexadas ao final da description de cada clipe no manifest.csv
+
+hashtags: "#abobicaduco #granny"
+
+# true = adiciona #Shorts na description (além das hashtags acima)
+append_shorts_hashtag: false
+
+tags:
+  - granny
+  - gameplay
+  - shorts
+
+# public | unlisted | private
+privacy: public
+
+# ID da playlist (opcional) — vídeo entra após upload
+# playlist_id: "PLxxxxxxxx"
+
+# 20 = Gaming (padrão Shorts de gameplay)
+category_id: "20"
+
+# Miniatura padrão JPEG/PNG para todos os clipes (opcional)
+# thumbnail: "E:/YOUTUBE/thumbs/default.jpg"
