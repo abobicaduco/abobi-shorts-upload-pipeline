@@ -106,33 +106,67 @@ Uses **gemini.google.com** with your **Google AI Pro** subscription — **no** G
 | Headless | Often blocked after auth | N/A |
 | ToS | Gray area (automation of consumer UI) | Supported |
 
-### One-time auth
+### One-time auth (recomendado: `--auth-cdp`)
+
+Quando o **email do Google fica girando para sempre** após digitar o endereço, o Playwright está sendo tratado como automação. Use **Chrome real** com porta de debug (sem flags do script):
+
+#### Opção A — `--auth-cdp` (padrão recomendado)
+
+**PowerShell** — abra o Chrome (feche outras janelas do mesmo perfil de debug antes):
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=9222 `
+  --user-data-dir="$env:USERPROFILE\.secrets\chrome-debug-gemini"
+```
+
+No Chrome que abriu: vá em [gemini.google.com](https://gemini.google.com), faça login (senha e **2FA só no navegador** — nunca no terminal).
+
+**Git Bash** — exportar sessão:
+
+```bash
+cd /c/Users/carlo/Projects/abobi-shorts-upload-pipeline
+python scripts/gemini-thumbnails.py --auth-cdp
+```
+
+1. O script imprime instruções e pede **ENTER** (Chrome com debug já aberto e logado).
+2. Conecta em `http://127.0.0.1:9222`, pede **ENTER** de novo para confirmar.
+3. Sessão salva em `%USERPROFILE%\.secrets\gemini_storage_state.json` (gitignored). O Chrome de debug pode ficar aberto.
+
+Porta ou host diferentes: `--auth-cdp-url http://127.0.0.1:9223`
+
+#### Opção B — `--auth-only` (perfil isolado Playwright)
 
 ```powershell
 python scripts/gemini-thumbnails.py --auth-only
 ```
 
-1. Chrome opens `gemini.google.com` (redirects to Google sign-in if needed)
-2. Log in manually with your Google account (Gemini Pro) — complete **2FA on your phone** if prompted
-3. Press **ENTER** in the terminal
-4. Session saved to `%USERPROFILE%\.secrets\gemini_storage_state.json` (gitignored)
+1. Chrome instalado abre `gemini.google.com` (perfil `%USERPROFILE%\.secrets\browser-profile-gemini\`)
+2. Login manual + 2FA no celular se pedido
+3. **ENTER** no terminal → `gemini_storage_state.json`
 
-If launch fails with *Target.createTarget* / profile lock: close all Chrome windows, delete `Singleton*` files under `%USERPROFILE%\.secrets\browser-profile-gemini\` (Chrome closed), then re-run `--auth-only`.
+Auth-only **não** passa flags extras de automação (só `channel=chrome`, viewport, remove `--enable-automation`). Opcional: `--slow-mo 100` se a UI estiver rápida demais.
 
-**Google login spins forever / “unsupported command-line flag” banner:** Google blocks automated browsers with flags like `--no-sandbox` or `--disable-dev-shm-usage`. The script now uses minimal Chrome args only (`--start-minimized`, window size, `locale=pt-BR`, `ignore_default_args=["--enable-automation"]`). If login still loops:
+Se ainda falhar: `--disable-blink-automation` ou volte para **`--auth-cdp`**.
 
-1. Close the script Chrome window completely.
-2. Re-run `--auth-only` (do **not** paste credentials into the terminal — type only in the browser).
-3. Complete 2FA on your phone when Google asks.
-4. Optional last resort: `--disable-blink-automation` (adds `--disable-blink-features=AutomationControlled`).
-5. **Do not** use `--use-system-chrome-profile` unless you understand the risk (must close all Chrome first).
+#### Opção C — perfil Chrome do sistema (arriscado)
 
-**Git Bash retry:**
-
-```bash
-cd /c/Users/carlo/Projects/abobi-shorts-upload-pipeline
-python scripts/gemini-thumbnails.py --auth-only
+```powershell
+# Feche TODO o Google Chrome antes
+python scripts/gemini-thumbnails.py --auth-only --use-system-chrome-profile
 ```
+
+Usa `%LOCALAPPDATA%\Google\Chrome\User Data` — risco de corrupção se o Chrome normal estiver aberto. Prefira `--auth-cdp`.
+
+#### Opção D — cookies manuais (sem Playwright no login)
+
+1. Faça login no **Chrome normal** em gemini.google.com.
+2. Exporte cookies (extensão tipo “Get cookies.txt” / “Cookie-Editor”) **ou** use `playwright codegen` apontando para o perfil — só para copiar estado; não commite o arquivo.
+3. Converta/importe para o formato `storage_state` do Playwright e salve em `%USERPROFILE%\.secrets\gemini_storage_state.json`, **ou** use `--auth-cdp` depois de logado no Chrome de debug (mais simples).
+
+**Segurança:** nunca cole senha no terminal; não commite `gemini_storage_state.json` nem perfis em `.secrets/`.
+
+**Erros de perfil (*Target.createTarget*):** feche o Chrome do script, apague `Singleton*` em `%USERPROFILE%\.secrets\browser-profile-gemini\` (só com Chrome fechado), tente de novo ou use `--auth-cdp`.
 
 ### Verify headed vs headless
 
@@ -153,10 +187,14 @@ python scripts/gemini-thumbnails.py `
 
 | Flag | Purpose |
 |------|---------|
+| `--auth-cdp` | Login via Chrome real + porta 9222 (melhor se email gira) |
+| `--auth-cdp-url` | Endpoint CDP (default `http://127.0.0.1:9222`) |
+| `--auth-only` | Login com perfil isolado Playwright |
+| `--slow-mo MS` | Atraso Playwright em ms (`--auth-only` only) |
 | `--headless` | No visible window (test with `--verify-session` first) |
 | `--sniff-network` | Log RPC URLs to `~/.secrets/gemini_network.log` (no auth headers) |
 | `--use-system-chrome-profile` | Use real Chrome profile (OFF default — close all Chrome; risky) |
-| `--disable-blink-automation` | Optional stealth flag if default login still fails |
+| `--disable-blink-automation` | Extra Chrome flag only if `--auth-only` still fails |
 | `--dry-run` | Plan paths/prompts only |
 | `--force` | Regenerate existing thumbs |
 
@@ -174,11 +212,12 @@ Documented patterns (batchexecute RPC, no secrets): [gemini/WEB_API_RESEARCH.md]
 
 ### Playwright settings
 
-- `headless=False` for `--auth-only`; `channel="chrome"`, `locale="pt-BR"`, viewport **1920×1080**, `--start-minimized`
-- **Removed** (trigger Google bot detection): `--no-sandbox`, `--disable-dev-shm-usage`, `--disable-web-security`
-- `ignore_default_args=["--enable-automation"]` on launch; optional `--disable-blink-automation` if login still fails
+- **Auth:** prefer `--auth-cdp` (attach to real Chrome); `--auth-only` uses `channel="chrome"` only (no bundled Chromium), viewport **1920×1080**, **no** extra `args` unless `--disable-blink-automation`
+- **Removed** (trigger Google bot detection): `--no-sandbox`, `--disable-dev-shm-usage`, `--disable-web-security`, `wmic` kill of user Chrome
+- `ignore_default_args=["--enable-automation"]` on auth/batch launch
+- CDP debug profile: `%USERPROFILE%\.secrets\chrome-debug-gemini\`
 - Batch: headed default; `--headless` optional (often blocked — use `--verify-session`)
-- Profile: `%USERPROFILE%\.secrets\browser-profile-gemini\` (gitignored); `--use-system-chrome-profile` only when needed
+- Isolated profile: `%USERPROFILE%\.secrets\browser-profile-gemini\` (gitignored)
 - `page.evaluate` fallbacks when Gemini UI selectors change (selectors are best-effort / TODO when UI shifts)
 
 **Session isolation:** Cursor, Claude, and other agents **do not** inherit `gemini_storage_state.json` — only this local Python CLI uses it.
@@ -330,7 +369,7 @@ Entregue 4 variações com hooks diferentes: {hook}
 | Never commit | Notes |
 |--------------|--------|
 | `youtube_token.json`, `youtube_client_secret.json` | OAuth |
-| `gemini_storage_state.json`, `gemini_network.log`, `browser-profile-gemini/` | Gemini web session / capture |
+| `gemini_storage_state.json`, `gemini_network.log`, `browser-profile-gemini/`, `chrome-debug-gemini/` | Gemini web session / capture / CDP profile |
 | `api-keys.json` | Gemini / other APIs |
 | `*.db` | Schedule state |
 | Full-size thumbnail exports with personal email/watermarks | Optional `.gitignore` under inbox if syncing folder |

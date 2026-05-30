@@ -10,7 +10,6 @@ import argparse
 import logging
 import os
 import re
-import subprocess
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -39,6 +38,9 @@ LOGGER = logging.getLogger(__name__)
 
 GEMINI_APP_URL = "https://gemini.google.com/app"
 GEMINI_HOME_URL = "https://gemini.google.com/"
+
+CDP_DEFAULT_URL = "http://127.0.0.1:9222"
+CDP_DEBUG_PROFILE_DIR = Path.home() / ".secrets" / "chrome-debug-gemini"
 
 _PW_WINDOW_WIDTH = 1920
 _PW_WINDOW_HEIGHT = 1080
@@ -236,6 +238,8 @@ class GeminiWebSettings:
     network_log: Path = resolve_network_log_path()
     use_system_chrome_profile: bool = False
     disable_blink_automation: bool = False
+    slow_mo: int = 0
+    auth_cdp_url: str = CDP_DEFAULT_URL
 
     @classmethod
     def from_args(
@@ -245,6 +249,8 @@ class GeminiWebSettings:
         sniff_network: bool = False,
         use_system_chrome_profile: bool = False,
         disable_blink_automation: bool = False,
+        slow_mo: int = 0,
+        auth_cdp_url: str = CDP_DEFAULT_URL,
     ) -> GeminiWebSettings:
         return cls(
             storage_state=resolve_storage_state_path(),
@@ -255,6 +261,8 @@ class GeminiWebSettings:
             sniff_network=sniff_network,
             use_system_chrome_profile=use_system_chrome_profile,
             disable_blink_automation=disable_blink_automation,
+            slow_mo=slow_mo,
+            auth_cdp_url=auth_cdp_url,
         )
 
 
@@ -274,25 +282,23 @@ def _set_auth_only_active(active: bool) -> None:
     _AUTH_ONLY_ACTIVE = active
 
 
-def _kill_stale_chrome(profile_dir: Path) -> None:
-    tag = profile_dir.name
+def _is_isolated_gemini_profile(profile_dir: Path) -> bool:
+    """True for ~/.secrets/browser-profile-gemini only — never touch system Chrome."""
     try:
-        subprocess.run(
-            f'wmic process where "Name=\'chrome.exe\' and CommandLine like \'%{tag}%\'" call terminate',
-            shell=True,
-            capture_output=True,
-            timeout=8,
-        )
-        time.sleep(1.0)
-    except Exception:
-        pass
+        return profile_dir.resolve() == resolve_browser_profile().resolve()
+    except OSError:
+        return profile_dir.name == "browser-profile-gemini"
+
+
+def _clear_profile_singleton_locks(profile_dir: Path) -> None:
+    """Remove Chrome singleton lock files (isolated profile only; does not kill processes)."""
+    if not _is_isolated_gemini_profile(profile_dir):
+        return
     for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
-        try:
+        with suppress(OSError):
             lf = profile_dir / lock
             if lf.exists():
                 lf.unlink()
-        except OSError:
-            pass
 
 
 def _format_auth_browser_error(profile_dir: Path, detail: str) -> str:
@@ -302,8 +308,35 @@ def _format_auth_browser_error(profile_dir: Path, detail: str) -> str:
         "  1. Fechar todas as janelas do Google Chrome (incluindo em segundo plano).\n"
         "  2. Se o erro persistir, apague os arquivos Singleton* nesta pasta (com Chrome fechado):\n"
         f"     {profile_dir}\n"
-        "  3. Rode de novo: python scripts/gemini-thumbnails.py --auth-only\n"
+        "  3. Preferido se o email ficar girando: python scripts/gemini-thumbnails.py --auth-cdp\n"
+        "  4. Ou: python scripts/gemini-thumbnails.py --auth-only\n"
         f"Detalhe tecnico: {detail}"
+    )
+
+
+def _print_auth_cdp_instructions(cdp_url: str) -> None:
+    profile = CDP_DEBUG_PROFILE_DIR
+    chrome_exe = Path(
+        os.environ.get(
+            "CHROME_EXECUTABLE",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        )
+    )
+    print(
+        "\n=== Login Gemini via Chrome real (CDP) — recomendado ===\n"
+        "O Google costuma bloquear login em Chrome aberto pelo Playwright.\n"
+        "Use um Chrome NORMAL com porta de debug (sem flags de automacao).\n\n"
+        "1) Feche o Chrome que o script abriu (se houver) e qualquer --auth-only antigo.\n"
+        "2) Inicie o Chrome manualmente (PowerShell):\n\n"
+        f'   & "{chrome_exe}" --remote-debugging-port=9222 '
+        f'--user-data-dir="{profile}"\n\n'
+        "   (Git Bash — uma linha:)\n\n"
+        f'   "/c/Program Files/Google/Chrome/Application/chrome.exe" '
+        f'--remote-debugging-port=9222 '
+        f'--user-data-dir="$HOME/.secrets/chrome-debug-gemini"\n\n'
+        f"3) No Chrome que abriu, va para {GEMINI_HOME_URL} e faca login "
+        "(senha e 2FA so no navegador — nunca no terminal).\n"
+        f"4) Volte aqui e pressione ENTER para conectar em {cdp_url} e salvar a sessao.\n"
     )
 
 
@@ -330,16 +363,22 @@ def _persistent_auth_context_kwargs(
     profile_dir: Path,
     *,
     disable_blink_automation: bool = False,
+    slow_mo: int = 0,
 ) -> dict[str, Any]:
-    return {
+    """Auth-only: installed Chrome, viewport only — no extra launch args (Google login)."""
+    kwargs: dict[str, Any] = {
         "user_data_dir": str(profile_dir),
         "headless": False,
         "channel": "chrome",
         "locale": "pt-BR",
         "viewport": {"width": _PW_WINDOW_WIDTH, "height": _PW_WINDOW_HEIGHT},
-        "args": _minimal_chrome_args(disable_blink_automation=disable_blink_automation),
         "ignore_default_args": ["--enable-automation"],
     }
+    if slow_mo > 0:
+        kwargs["slow_mo"] = slow_mo
+    if disable_blink_automation:
+        kwargs["args"] = _minimal_chrome_args(disable_blink_automation=True)
+    return kwargs
 
 
 def _ephemeral_browser_launch_kwargs(settings: GeminiWebSettings) -> dict[str, Any]:
@@ -362,10 +401,13 @@ def _launch_gemini_auth_context(
     profile_dir: Path,
     *,
     disable_blink_automation: bool = False,
+    slow_mo: int = 0,
 ) -> BrowserContext:
-    """Persistent context with installed Chrome (minimal args for Google login)."""
+    """Persistent context with installed Chrome only (no Playwright-bundled Chromium)."""
     kwargs = _persistent_auth_context_kwargs(
-        profile_dir, disable_blink_automation=disable_blink_automation
+        profile_dir,
+        disable_blink_automation=disable_blink_automation,
+        slow_mo=slow_mo,
     )
     try:
         return pw.chromium.launch_persistent_context(**kwargs)
@@ -387,17 +429,19 @@ def _open_auth_only_session(
     profile_dir: Path,
     *,
     disable_blink_automation: bool = False,
+    slow_mo: int = 0,
 ) -> tuple[BrowserContext, Page]:
     """Launch persistent Chrome profile; retry once if new_page / Target.createTarget fails."""
     last_error: Optional[Exception] = None
     for attempt in range(2):
         if attempt > 0:
-            _kill_stale_chrome(profile_dir)
+            _clear_profile_singleton_locks(profile_dir)
         try:
             context = _launch_gemini_auth_context(
                 pw,
                 profile_dir,
                 disable_blink_automation=disable_blink_automation,
+                slow_mo=slow_mo,
             )
         except Exception as exc:
             last_error = exc
@@ -432,7 +476,8 @@ def _save_auth_storage_state(context: BrowserContext, path: Path) -> bool:
             LOGGER.error("Browser closed before storage_state could be saved.")
             print(
                 "\nO navegador foi fechado antes de salvar a sessao.\n"
-                "Rode novamente: python scripts/gemini-thumbnails.py --auth-only\n"
+                "Rode novamente: python scripts/gemini-thumbnails.py --auth-cdp\n"
+                "  (ou --auth-only)\n"
             )
         else:
             LOGGER.exception("Failed to save storage_state: %s", exc)
@@ -539,16 +584,74 @@ def ensure_session(settings: GeminiWebSettings, page: Page, context: BrowserCont
     if not settings.storage_state.is_file():
         raise RuntimeError(
             "Gemini session missing. Run first:\n"
-            "  python scripts/gemini-thumbnails.py --auth-only\n"
+            "  python scripts/gemini-thumbnails.py --auth-cdp\n"
             f"Expected: {settings.storage_state}"
         )
     if is_logged_in_passive(page, context):
         return
     raise RuntimeError(
         "Gemini not authenticated (storage_state expired or headless blocked).\n"
-        "Re-run: python scripts/gemini-thumbnails.py --auth-only\n"
+        "Re-run: python scripts/gemini-thumbnails.py --auth-cdp\n"
         f"Storage: {settings.storage_state}"
     )
+
+
+def run_auth_cdp(settings: Optional[GeminiWebSettings] = None) -> bool:
+    """Attach to real Chrome via CDP; export storage_state after manual login."""
+    require_playwright()
+    settings = settings or GeminiWebSettings.from_args()
+    settings.storage_state.parent.mkdir(parents=True, exist_ok=True)
+    cdp_url = settings.auth_cdp_url
+
+    _print_auth_cdp_instructions(cdp_url)
+    try:
+        input("Pressione ENTER quando o Chrome com debug estiver aberto e logado no Gemini... ")
+    except EOFError:
+        print("\nEntrada cancelada. Sessao nao salva.\n")
+        return False
+
+    _set_auth_only_active(True)
+    try:
+        assert sync_playwright is not None
+        with sync_playwright() as pw:
+            try:
+                browser = pw.chromium.connect_over_cdp(cdp_url)
+            except Exception as exc:
+                print(
+                    f"\nNao foi possivel conectar em {cdp_url}.\n"
+                    "Confirme que o Chrome foi iniciado com --remote-debugging-port=9222 "
+                    "e que nenhum firewall bloqueou a porta.\n"
+                    f"Detalhe: {exc}\n"
+                )
+                return False
+
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.pages[0] if context.pages else context.new_page()
+            page.set_default_timeout(300_000)
+
+            if "gemini.google.com" not in page.url.lower():
+                with suppress(Exception):
+                    page.goto(GEMINI_HOME_URL, wait_until="domcontentloaded", timeout=120_000)
+
+            print(
+                "\nConectado ao Chrome via CDP. Confirme que o Gemini esta logado.\n"
+                "Pressione ENTER para exportar a sessao (o Chrome permanece aberto).\n"
+            )
+            try:
+                input()
+            except EOFError:
+                print("\nEntrada cancelada. Sessao nao salva.\n")
+                return False
+
+            storage_path = settings.storage_state.resolve()
+            if not _save_auth_storage_state(context, storage_path):
+                return False
+            print(f"\nSessao salva em: {storage_path}\n")
+            print("Pode fechar a janela de debug do Chrome quando quiser.\n")
+            LOGGER.info("CDP session saved: storage_state=%s", storage_path)
+            return True
+    finally:
+        _set_auth_only_active(False)
 
 
 def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
@@ -559,11 +662,17 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
         print(
             "\nAVISO: --use-system-chrome-profile usa o perfil Chrome do sistema.\n"
             "Feche TODO o Google Chrome antes de continuar (risco de corrupcao de perfil).\n"
-            "Prefira o perfil isolado padrao (~/.secrets/browser-profile-gemini).\n"
+            "Prefira --auth-cdp (Chrome real) ou o perfil isolado "
+            "(~/.secrets/browser-profile-gemini).\n"
         )
     else:
         settings.browser_profile.mkdir(parents=True, exist_ok=True)
     settings.storage_state.parent.mkdir(parents=True, exist_ok=True)
+
+    print(
+        "\nDica: se o email do Google ficar girando para sempre, use:\n"
+        "  python scripts/gemini-thumbnails.py --auth-cdp\n"
+    )
 
     _set_auth_only_active(True)
     context: Optional[BrowserContext] = None
@@ -575,6 +684,7 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
                 pw,
                 settings.browser_profile,
                 disable_blink_automation=settings.disable_blink_automation,
+                slow_mo=settings.slow_mo,
             )
             page.set_default_timeout(300_000)
 
@@ -617,7 +727,7 @@ def gemini_browser(settings: GeminiWebSettings) -> Iterator[tuple[BrowserContext
 
     require_playwright()
     settings.browser_profile.mkdir(parents=True, exist_ok=True)
-    _kill_stale_chrome(settings.browser_profile)
+    _clear_profile_singleton_locks(settings.browser_profile)
 
     assert sync_playwright is not None
     kwargs = _ephemeral_browser_launch_kwargs(settings)
@@ -857,7 +967,7 @@ def run_generation(
     if not dry_run and not settings.storage_state.is_file():
         raise RuntimeError(
             "Gemini browser session missing. Run:\n"
-            "  python scripts/gemini-thumbnails.py --auth-only"
+            "  python scripts/gemini-thumbnails.py --auth-cdp"
         )
 
     written: list[Path] = []
@@ -888,17 +998,42 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
+            "  python scripts/gemini-thumbnails.py --auth-cdp\n"
             "  python scripts/gemini-thumbnails.py --auth-only\n"
             "  python scripts/gemini-thumbnails.py --verify-session\n"
             "  python scripts/gemini-thumbnails.py --faces-dir ... --videos-dir ... --game \"Fortnite Mobile\"\n"
             "  python scripts/gemini-thumbnails.py ... --headless --sniff-network\n"
         ),
     )
-    p.add_argument("--auth-only", action="store_true", help="Login once; save storage_state")
+    p.add_argument(
+        "--auth-cdp",
+        action="store_true",
+        help=(
+            "Login via real Chrome (remote debugging port 9222); "
+            "best when Google email spins forever"
+        ),
+    )
+    p.add_argument(
+        "--auth-cdp-url",
+        default=CDP_DEFAULT_URL,
+        help=f"CDP endpoint (default: {CDP_DEFAULT_URL})",
+    )
+    p.add_argument(
+        "--auth-only",
+        action="store_true",
+        help="Login once with isolated Chrome profile; save storage_state",
+    )
     p.add_argument(
         "--wait-login",
         action="store_true",
         help="Alias for --auth-only (keep browser open until ENTER)",
+    )
+    p.add_argument(
+        "--slow-mo",
+        type=int,
+        default=0,
+        metavar="MS",
+        help="Playwright slow_mo delay in ms (--auth-only only)",
     )
     p.add_argument(
         "--verify-session",
@@ -924,7 +1059,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--use-system-chrome-profile",
         action="store_true",
         help=(
-            "Use %LOCALAPPDATA%/Google/Chrome/User Data instead of isolated profile "
+            "Use %%LOCALAPPDATA%%/Google/Chrome/User Data instead of isolated profile "
             "(OFF by default — close all Chrome windows first; risky)"
         ),
     )
@@ -955,7 +1090,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         sniff_network=args.sniff_network,
         use_system_chrome_profile=args.use_system_chrome_profile,
         disable_blink_automation=args.disable_blink_automation,
+        slow_mo=args.slow_mo,
+        auth_cdp_url=args.auth_cdp_url,
     )
+
+    if args.auth_cdp:
+        ok = run_auth_cdp(settings)
+        return 0 if ok else 1
 
     if args.auth_only or args.wait_login:
         ok = run_auth_only(settings)
@@ -967,7 +1108,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         for k, v in status.items():
             print(f"  {k}: {v}")
         if not status.get("storage_state_exists"):
-            print("\nRun --auth-only first.")
+            print("\nRun --auth-cdp or --auth-only first.")
             return 1
         if status.get("headless_logged_in") is False and status.get("headed_logged_in"):
             print(
