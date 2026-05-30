@@ -112,6 +112,11 @@ def load_manifest_csv(
             elif batch and batch.default_thumb:
                 thumb = batch.default_thumb
 
+            tags_raw = normalized.get("tags", "")
+            tags: Optional[List[str]] = None
+            if tags_raw:
+                tags = [t.strip() for t in tags_raw.replace(",", "|").split("|") if t.strip()]
+
             video = _resolve_video_path(raw_file, inbox, manifest_path.parent)
             if not video.is_file():
                 LOGGER.warning("Row %s: file not found %s - skipping", row_num, video)
@@ -123,6 +128,7 @@ def load_manifest_csv(
                     title=title,
                     description=description,
                     thumb_path=thumb,
+                    tags=tags,
                 )
             )
     return entries

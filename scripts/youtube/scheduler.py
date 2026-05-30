@@ -346,6 +346,7 @@ def execute_planned_uploads(
     *,
     dry_run: bool = False,
     limit: Optional[int] = None,
+    manifest_by_path: Optional[dict[Path, ClipEntry]] = None,
 ) -> tuple[int, int, int, bool]:
     """Upload with publishAt. Returns (ok, failed, skipped, quota_exhausted)."""
     ok = failed = skipped = 0
@@ -369,6 +370,13 @@ def execute_planned_uploads(
             description=item.description,
             tags=item.tags,
         )
+        if manifest_by_path:
+            manifest_entry = manifest_by_path.get(item.file_path.resolve())
+            if manifest_entry:
+                if manifest_entry.thumb_path:
+                    entry.thumb_path = manifest_entry.thumb_path
+                if manifest_entry.tags:
+                    entry.tags = manifest_entry.tags
 
         if dry_run:
             uploader.upload_video(
@@ -447,6 +455,7 @@ def resume_pending(
     limit: Optional[int] = None,
     use_llm: Optional[bool] = None,
     metadata_manifest: Optional[Path] = None,
+    manifest_by_path: Optional[dict[Path, ClipEntry]] = None,
 ) -> tuple[int, int, int, bool]:
     stem = source_stem or infer_source_stem(db)
     rows = db.list_by_status(["pending", "failed"])
@@ -488,4 +497,11 @@ def resume_pending(
                 tags=tags,
             )
         )
-    return execute_planned_uploads(planned, uploader, db, dry_run=False, limit=limit)
+    return execute_planned_uploads(
+        planned,
+        uploader,
+        db,
+        dry_run=False,
+        limit=limit,
+        manifest_by_path=manifest_by_path,
+    )

@@ -25,7 +25,7 @@ from shared.llm_metadata import (
     save_metadata_manifest,
 )
 from youtube.config import BatchConfig, YouTubeSettings, load_env_file
-from youtube.manifest import load_batch_yaml
+from youtube.manifest import load_batch_yaml, load_manifest_csv
 from youtube.schedule_db import ScheduleDB, default_db_path
 from youtube.scheduler import (
     LONG_FORM_SLOT_HOUR,
@@ -49,6 +49,33 @@ BATCH_ID = "fortnite_mobile_20260530"
 GAME = "Fortnite Mobile"
 SOURCE_STEM = "Fortnite Mobile gameplay"
 LONG_SLOTS = (LONG_FORM_SLOT_HOUR,)
+
+DEFAULT_THUMBS = [
+    Path(r"C:\Users\carlo\Pictures\thumbs\Gemini_Generated_Image_k75oumk75oumk75o.png"),
+    Path(r"C:\Users\carlo\Pictures\thumbs\Gemini_Generated_Image_rp9ytrrp9ytrrp9y.png"),
+    Path(r"C:\Users\carlo\Pictures\thumbs\Gemini_Generated_Image_s3z2ezs3z2ezs3z2.png"),
+    Path(r"C:\Users\carlo\Pictures\thumbs\Gemini_Generated_Image_876bb9876bb9876b.png"),
+]
+
+
+def _copy_thumbnails(inbox: Path, sources: list[Path], *, dry_run: bool) -> list[Path]:
+    """Copy user thumbs to inbox/thumbnails/ as fortnite_mobile_NN_thumb.png."""
+    thumb_dir = inbox / "thumbnails"
+    if not dry_run:
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+    dest_paths: list[Path] = []
+    for i, src in enumerate(sources, start=1):
+        if not src.is_file():
+            LOGGER.error("Missing thumbnail: %s", src)
+            continue
+        dest = thumb_dir / f"fortnite_mobile_{i:02d}_thumb.png"
+        dest_paths.append(dest)
+        if dry_run:
+            LOGGER.info("[DRY-RUN] Would copy thumb %s -> %s", src.name, dest)
+        else:
+            shutil.copy2(src, dest)
+            LOGGER.info("Thumbnail %s -> %s", src.name, dest.name)
+    return dest_paths
 
 
 def _probe_duration_sec(path: Path) -> Optional[float]:
@@ -134,12 +161,16 @@ def _write_manifest(
     inbox: Path,
     rows: list[dict[str, Any]],
     batch: BatchConfig,
+    *,
+    thumb_names: Optional[list[str]] = None,
 ) -> Path:
     manifest_path = inbox / "manifest.csv"
     with manifest_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["file_path", "title", "description", "tags", "tiktok_caption"])
-        for row in rows:
+        writer.writerow(
+            ["file_path", "title", "description", "tags", "tiktok_caption", "thumb_path"]
+        )
+        for idx, row in enumerate(rows):
             yt = row["youtube"]
             desc = build_youtube_description(
                 yt["description"],
@@ -147,6 +178,9 @@ def _write_manifest(
                 append_shorts=batch.append_shorts_hashtag,
             )
             tags = "|".join(yt.get("tags") or [])
+            thumb_col = ""
+            if thumb_names and idx < len(thumb_names):
+                thumb_col = thumb_names[idx]
             writer.writerow(
                 [
                     row["dest_name"],
@@ -154,6 +188,7 @@ def _write_manifest(
                     desc,
                     tags,
                     _tiktok_caption(row["tiktok"]),
+                    thumb_col,
                 ]
             )
     return manifest_path
@@ -239,12 +274,70 @@ def run(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--sources", nargs="*", type=Path, help="Override source MP4 paths")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--schedule-only", action="store_true", help="Plan DB slots, no YouTube upload")
+    p.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="Skip copy/metadata; upload pending Fortnite rows from DB",
+    )
     p.add_argument("--upload-limit", type=int, default=1, help="Max YouTube uploads this run")
     p.add_argument("--no-llm", action="store_true")
     p.add_argument("--start-date", help="YYYY-MM-DD for first long slot")
     p.add_argument("--db", type=Path, help="youtube_schedule.db path")
     p.add_argument("--tiktok-db", type=Path, help="tiktok_schedule.db path")
+    p.add_argument(
+        "--thumbs",
+        nargs="*",
+        type=Path,
+        help="Thumbnail PNG/JPG paths in video order (default: Gemini exports)",
+    )
+    p.add_argument(
+        "--generate-thumbs",
+        action="store_true",
+        help="Generate thumbnails via Gemini API (requires --faces-dir)",
+    )
+    p.add_argument(
+        "--faces-dir",
+        type=Path,
+        help="Selfie folder for --generate-thumbs (one distinct face per video)",
+    )
+    p.add_argument(
+        "--approve-thumbs",
+        action="store_true",
+        help="Abort upload if expected thumbnails/ files are missing",
+    )
     args = p.parse_args(argv)
+
+    yt_db = ScheduleDB(args.db or default_db_path())
+    settings = YouTubeSettings.from_env()
+    inbox = Path.home() / "YOUTUBE" / "inbox" / BATCH_ID
+    settings.inbox = inbox
+    batch_path = inbox / "batch.yaml"
+    batch = load_batch_yaml(batch_path) if batch_path.is_file() else BatchConfig()
+    tz_name = "America/Sao_Paulo"
+
+    if args.upload_only:
+        from youtube.scheduler import resume_pending
+
+        load_env_file()
+        youtube = get_youtube_service(settings.client_secrets, settings.token_path)
+        uploader = YouTubeUploader(youtube, batch=batch)
+        ok, failed, skipped, quota = resume_pending(
+            yt_db,
+            uploader,
+            batch,
+            source_stem=SOURCE_STEM,
+            game=GAME,
+            limit=args.upload_limit,
+            metadata_manifest=inbox / "clips_metadata.json",
+        )
+        LOGGER.info(
+            "YouTube resume: ok=%s failed=%s skipped=%s quota_hit=%s",
+            ok,
+            failed,
+            skipped,
+            quota,
+        )
+        return 1 if failed else 0
 
     sources = [Path(s) for s in args.sources] if args.sources else list(DEFAULT_SOURCES)
     for src in sources:
@@ -260,7 +353,6 @@ def run(argv: Optional[list[str]] = None) -> int:
     )
 
     home = Path.home()
-    inbox = home / "YOUTUBE" / "inbox" / BATCH_ID
     pending_tt = home / "YOUTUBE" / "pending_tiktok" / "fortnite_mobile"
     inbox.mkdir(parents=True, exist_ok=True)
 
@@ -294,10 +386,36 @@ def run(argv: Optional[list[str]] = None) -> int:
             }
         )
 
+    if args.generate_thumbs:
+        if not args.faces_dir or not args.faces_dir.is_dir():
+            LOGGER.error("--generate-thumbs requires --faces-dir pointing to selfie images")
+            return 1
+        from thumbnails.gemini_generate import run_generation
+
+        run_generation(
+            faces_dir=args.faces_dir.resolve(),
+            videos_dir=inbox,
+            game=GAME,
+            count=len(sources),
+            output_dir=inbox,
+            dry_run=args.dry_run,
+        )
+    elif args.thumbs:
+        thumb_sources = [Path(t) for t in args.thumbs]
+        _copy_thumbnails(inbox, thumb_sources, dry_run=args.dry_run)
+    else:
+        thumb_sources = list(DEFAULT_THUMBS)
+        _copy_thumbnails(inbox, thumb_sources, dry_run=args.dry_run)
+
+    thumb_rel = [
+        f"thumbnails/fortnite_mobile_{i:02d}_thumb.png"
+        for i in range(1, len(sources) + 1)
+    ]
+
     batch_path = inbox / "batch.yaml"
     _write_batch_yaml(batch_path)
     batch = load_batch_yaml(batch_path)
-    _write_manifest(inbox, rows, batch)
+    _write_manifest(inbox, rows, batch, thumb_names=thumb_rel)
     clips_manifest: dict[str, Any] = {"clips": {}}
     for row in rows:
         fn = row["dest_name"]
@@ -307,11 +425,6 @@ def run(argv: Optional[list[str]] = None) -> int:
         }
     save_metadata_manifest(inbox / "clips_metadata.json", clips_manifest)
 
-    settings = YouTubeSettings.from_env()
-    settings.inbox = inbox
-    yt_db = ScheduleDB(args.db or default_db_path())
-
-    tz_name = "America/Sao_Paulo"
     start = date.fromisoformat(args.start_date) if args.start_date else None
     if start is None:
         from youtube.timezone_util import now_in_tz
@@ -350,7 +463,18 @@ def run(argv: Optional[list[str]] = None) -> int:
         LOGGER.info("Schedule-only/dry-run — skipping YouTube upload.")
         return 0
 
+    if args.approve_thumbs:
+        missing = [inbox / rel for rel in thumb_rel if not (inbox / rel).is_file()]
+        if missing:
+            for path in missing:
+                LOGGER.error("Missing approved thumbnail: %s", path)
+            LOGGER.error(
+                "Upload blocked (--approve-thumbs). Generate or copy thumbs first — see docs/THUMBNAILS.md"
+            )
+            return 1
+
     entries = load_manifest_csv(inbox / "manifest.csv", inbox, batch)
+    manifest_by_path = {e.file_path.resolve(): e for e in entries}
     youtube = get_youtube_service(settings.client_secrets, settings.token_path)
     uploader = YouTubeUploader(youtube, batch=batch)
     ok, failed, skipped, quota = execute_planned_uploads(
@@ -359,6 +483,7 @@ def run(argv: Optional[list[str]] = None) -> int:
         yt_db,
         dry_run=False,
         limit=args.upload_limit,
+        manifest_by_path=manifest_by_path,
     )
     LOGGER.info(
         "YouTube upload: ok=%s failed=%s skipped=%s quota_hit=%s",
