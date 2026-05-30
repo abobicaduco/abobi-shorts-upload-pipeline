@@ -348,6 +348,25 @@ def _schedule_private_video(
     ).execute()
 
 
+def _assign_sequential_parts(targets: Sequence[AuditTarget], db: ScheduleDB) -> None:
+    """Assign unique part numbers when title lacks #NN (avoids duplicate #01 titles)."""
+    max_part = 0
+    for target in targets:
+        if re.search(r"#\d{1,3}\b", target.video.title):
+            max_part = max(max_part, target.part_number)
+    for row in db.list_by_status(["pending", "uploading", "scheduled", "uploaded", "failed"]):
+        max_part = max(max_part, extract_clip_part(row.title))
+
+    next_part = max_part + 1
+    for target in targets:
+        if target.kind == "skip":
+            continue
+        if re.search(r"#\d{1,3}\b", target.video.title):
+            continue
+        target.part_number = next_part
+        next_part += 1
+
+
 def identify_targets(
     videos: Sequence[ChannelVideo],
     db: ScheduleDB,
@@ -382,6 +401,8 @@ def run_channel_audit(
 ) -> AuditReport:
     load_env_file()
     settings = YouTubeSettings.from_env()
+    if use_llm is None:
+        use_llm = False
     batch = batch or BatchConfig(
         hashtags="#abobicaduco #granny2 #granny #gameplay #horror #shorts #terror #susto",
         append_shorts_hashtag=True,
@@ -401,6 +422,7 @@ def run_channel_audit(
         report.date_range_end = max(pub_dates).date().isoformat()
 
     targets = identify_targets(videos, db, match_pattern=match_pattern)
+    _assign_sequential_parts(targets, db)
     channel_occupied = _channel_occupied_slots(videos)
 
     actionable = [t for t in targets if t.kind != "skip"]

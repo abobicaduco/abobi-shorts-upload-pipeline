@@ -15,6 +15,8 @@
 
 | Data | O que foi feito |
 |------|-----------------|
+| 2026-05-30 | **audit_and_schedule.py:** audita canal abobicaduco — lista uploads, corrige metadados SEO (template/LLM), agenda private sem publishAt; unlisted = só metadados (publishAt impossível); skip video_id já no SQLite; launcher `youtube-audit.py` + flag `--audit-schedule` |
+| 2026-05-30 | **Execução live:** 125 vídeos no canal; 32 metadados atualizados; 31 private agendados (#53–#83, slots 16/18/21 após pipeline #01–#51); 1 unlisted metadata-only (`hljPp54CAsM`); 0 falhas |
 | 2026-05-29 | **Ollama metadata:** `scripts/shared/llm_metadata.py` — títulos/descrições/hashtags/tags PT-BR via Llama local; fallback template; `clips_metadata.json`; flags `--use-llm` / `--no-llm` / `--pre-generate-metadata` |
 | 2026-05-29 | **Docs unificados:** `docs/PLATFORMS.md`, `LOCAL_SETUP.md`, README Platforms section; TikTok 4/51 uploaded |
 | 2026-05-29 | **[SCHEDULING_POLICY.md](SCHEDULING_POLICY.md):** regras 3 Shorts/dia (16/18/21 SP) + 1 longo/dia (planejado); guard para agentes; bloco **AMANHÃ** com `--resume --upload-limit 6 --until-done`; estado 45/51 + 6 pending |
@@ -33,12 +35,55 @@
 
 ### ▶ AMANHÃ — retomar os 6 pendentes
 
+> **Atualização 2026-05-30:** Os 6 pendentes originais (#46–#51) foram concluídos. Novos 31 private órfãos foram auditados e agendados (#53–#83). Ver seção **Channel audit** abaixo.
+
 ```powershell
 cd C:\Users\carlo\Projects\abobi-shorts-upload-pipeline
 python scripts/youtube-pipeline.py --resume --upload-limit 6 --until-done
 ```
 
 Verificar após sucesso: `pending=0` (detalhes em [SCHEDULING_POLICY.md](SCHEDULING_POLICY.md)).
+
+### Channel audit (`audit_and_schedule.py`)
+
+Corrige vídeos **unlisted** (só metadados) e **private sem publishAt** (metadados + agendamento).
+
+**Limitação YouTube:** vídeos **unlisted já publicados** aceitam `videos.update` em snippet (title, description, tags), mas **não** aceitam `status.publishAt` futuro para virar public scheduled. Para agendar publicação, o vídeo precisa estar **private** (ou ser re-upload).
+
+```powershell
+# Dry-run (sem writes)
+python scripts/youtube-audit.py --dry-run --no-llm
+
+# Execução real
+python scripts/youtube-audit.py --no-llm
+
+# Via CLI principal
+python scripts/youtube-upload.py --audit-schedule --dry-run
+
+# LLM local (Ollama) — mais lento; fallback template se offline
+python scripts/youtube-audit.py --use-llm
+```
+
+| Flag | Efeito |
+|------|--------|
+| `--dry-run` | Lista ações sem chamar API de escrita |
+| `--no-llm` | Metadados via template (rápido, padrão no audit) |
+| `--use-llm` | Ollama via `llm_metadata.py` |
+| `--all-videos` | Ignora filtro de título Granny/abobicaduco |
+| `--limit N` | Processa no máximo N alvos |
+| `--db PATH` | SQLite custom (default `~/.secrets/youtube_schedule.db`) |
+
+**Classificação de alvos:**
+
+| privacyStatus | publishAt | Ação |
+|---------------|-----------|------|
+| `private` | ausente ou passado | metadata + schedule (16/18/21 SP) |
+| `private` | futuro | skip (já agendado no YouTube) |
+| `unlisted` | n/a | metadata only |
+| `public` | n/a | skip |
+| qualquer | video_id no SQLite | skip |
+
+**Última execução (2026-05-30):** 125 total · 51 skip DB · 42 skip outros · 32 metadata · 31 scheduled · 1 unlisted-only · 0 failed · range publicação 2026-05-22..2026-05-30 · slots novos 2026-06-15..2026-06-25 (SP).
 
 ### Status do projeto
 
@@ -109,6 +154,7 @@ flowchart TB
 ```
 scripts/
   youtube-upload.py          # launcher upload + flags --pipeline
+  youtube-audit.py             # launcher channel audit
   youtube-pipeline.py          # launcher dedicado ao pipeline
   .env.example                 # vars gerais (bloco YouTube comentado)
   youtube/
@@ -122,6 +168,7 @@ scripts/
     uploader.py                # upload resumable + thumb + playlist
     manifest.py                # CSV + YAML
     watcher.py                 # --inbox --watch
+    audit_and_schedule.py      # channel audit + metadata fix + schedule private
     secrets_store.py           # merge em api-keys.json
     stdio.py                   # UTF-8 console Windows
     requirements.txt
@@ -350,6 +397,8 @@ Copiar de `scripts/youtube/templates/`. Ver [SCHEDULER.md](SCHEDULER.md) para de
 
 | Date | What changed |
 |------|----------------|
+| 2026-05-30 | **audit_and_schedule.py:** channel audit for abobicaduco — metadata fix + schedule orphan private videos; unlisted = metadata-only; skip IDs in SQLite; `youtube-audit.py` launcher |
+| 2026-05-30 | **Live run:** 125 channel videos; 32 metadata updated; 31 private scheduled (#53–#83); 1 unlisted metadata-only; 0 failures |
 | 2026-05-29 | **[SCHEDULING_POLICY.md](SCHEDULING_POLICY.md):** 3 Shorts/day policy, AI guard rails, TOMORROW resume command, 45/51 + 6 pending |
 | 2026-05-29 | **Granny 2 Part #2 bulk upload:** 33 clips uploaded this session; **45/51 scheduled** on YouTube; **6 pending** (#46–#51) — stopped at `uploadLimitExceeded` |
 | 2026-05-29 | Improved PT-BR metadata; pipeline flags `--refresh-metadata`, `--until-done`, quota detection |
@@ -421,4 +470,4 @@ Paste **this file** + **[SCHEDULING_POLICY.md](SCHEDULING_POLICY.md)** + [README
 
 ---
 
-*Last updated: 2026-05-29 — abobi-shorts-upload-pipeline YouTube automation (upload + pipeline). See [SCHEDULING_POLICY.md](SCHEDULING_POLICY.md).*
+*Last updated: 2026-05-30 — abobi-shorts-upload-pipeline YouTube automation (upload + pipeline + channel audit). See [SCHEDULING_POLICY.md](SCHEDULING_POLICY.md).*
