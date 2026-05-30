@@ -62,5 +62,10 @@ scripts/tiktok/.pipeline.lock
 /inbox/
 **/tiktok_debug/
 
+# ─── Local-only docs (machine-specific paths) ─────────────────
+docs/LOCAL_USER_PATHS.md
+*.private.md
+docs/local/
+
 # ─── Cursor local ───────────────────────────────────────────
 .cursor/

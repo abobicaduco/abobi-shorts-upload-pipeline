@@ -5,6 +5,8 @@
 
 Related: [content/FORTNITE_MOBILE.md](content/FORTNITE_MOBILE.md) · [youtube/HANDOFF.md](youtube/HANDOFF.md) · [PLATFORMS.md](PLATFORMS.md)
 
+**Local face photos:** default folder `%USERPROFILE%\Pictures\EU` (one selfie per video). Machine-specific paths and full examples → **`docs/LOCAL_USER_PATHS.md`** (local only, gitignored — create from this doc on each PC).
+
 ---
 
 ## Current workflow (manual, Gemini paid)
@@ -144,7 +146,7 @@ If `headless_logged_in: False` but headed works, run batch **without** `--headle
 
 ```powershell
 python scripts/gemini-thumbnails.py `
-  --faces-dir "$env:USERPROFILE\Pictures\faces" `
+  --faces-dir "$env:USERPROFILE\Pictures\EU" `
   --videos-dir "$env:USERPROFILE\YOUTUBE\inbox\fortnite_mobile_20260530" `
   --game "Fortnite Mobile"
 ```
@@ -248,14 +250,14 @@ Consumer **Google AI Pro** (browser) **não** desbloqueia API — assinatura ≠
 
 ```powershell
 python scripts/generate_thumbnails.py `
-  --faces-dir "$env:USERPROFILE\Pictures\faces" `
+  --faces-dir "$env:USERPROFILE\Pictures\EU" `
   --videos-dir "$env:USERPROFILE\YOUTUBE\inbox\fortnite_mobile_20260530" `
   --game "Fortnite Mobile"
 ```
 
 | Flag | Purpose |
 |------|---------|
-| `--faces-dir` | Folder of face selfies (jpg/png) — **one distinct face per video, no reuse in one run** |
+| `--faces-dir` | Folder of face selfies (jpg/png) — default `%USERPROFILE%\Pictures\EU`; see `LOCAL_USER_PATHS.md` (local, gitignored). **One distinct face per video, no reuse in one run.** |
 | `--videos-dir` | Folder of MP4s; output goes to `videos-dir/thumbnails/{stem}_thumb.png` |
 | `--game` | Prompt theme set (`Fortnite Mobile`, `Granny 2`, … — see `scripts/thumbnails/prompts.py`) |
 | `--count N` | Override auto-count of `.mp4` files |
