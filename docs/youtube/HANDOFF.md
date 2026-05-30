@@ -15,6 +15,7 @@
 
 | Data | O que foi feito |
 |------|-----------------|
+| 2026-05-30 | **Fortnite Mobile long-form (4 vídeos):** inbox `~/YOUTUBE/inbox/fortnite_mobile_20260530/` + `batch.yaml` + `manifest.csv`; slot longo **19:00** SP (1/dia); 4 uploads agendados (`KlmXPQi1aCA`, `kw0FXbwlSEY`, `LaW_ah7WftM`, `bVVnwSipiUk`); TikTok em `pending_tiktok/fortnite_mobile` (cap 30 scheduled); script `scripts/fortnite_long_batch.py` |
 | 2026-05-30 | **audit_and_schedule.py:** audita canal abobicaduco — lista uploads, corrige metadados SEO (template/LLM), agenda private sem publishAt; unlisted = só metadados (publishAt impossível); skip video_id já no SQLite; launcher `youtube-audit.py` + flag `--audit-schedule` |
 | 2026-05-30 | **Execução live:** 125 vídeos no canal; 32 metadados atualizados; 31 private agendados (#53–#83, slots 16/18/21 após pipeline #01–#51); 1 unlisted metadata-only (`hljPp54CAsM`); 0 falhas |
 | 2026-05-29 | **Ollama metadata:** `scripts/shared/llm_metadata.py` — títulos/descrições/hashtags/tags PT-BR via Llama local; fallback template; `clips_metadata.json`; flags `--use-llm` / `--no-llm` / `--pre-generate-metadata` |

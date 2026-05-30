@@ -31,6 +31,7 @@ Thumbs.db
 scripts/__pycache__/
 scripts/youtube/__pycache__/
 scripts/tiktok/__pycache__/
+scripts/thumbnails/__pycache__/
 scripts/shared/__pycache__/
 *.pyc
 
@@ -46,7 +47,11 @@ scripts/browser-profile-tiktok/
 scripts/browser-profile-*/
 **/storage_state*.json
 **/tiktok_storage_state.json
+**/gemini_storage_state.json
+**/gemini_network.log
+**/gemini_storage_state.json
 **/.secrets/
+scripts/browser-profile-gemini/
 
 # ─── Pipeline locks & local media ─────────────────────────────
 scripts/youtube/.pipeline.lock

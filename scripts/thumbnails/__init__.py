@@ -1,2 +1,2 @@
 # -*- coding: utf-8 -*-
-"""YouTube thumbnail generation helpers (Gemini image API)."""
+"""YouTube thumbnail generation (Gemini API + browser web)."""

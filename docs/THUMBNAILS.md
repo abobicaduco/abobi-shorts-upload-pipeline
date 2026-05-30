@@ -73,6 +73,95 @@ Dry-run logs `[DRY-RUN] Would set thumbnail: …` when path is valid.
 
 ---
 
+## Automation — comparison (May 2026)
+
+| Approach | Script | Auth | Works today? | Best for |
+|----------|--------|------|--------------|----------|
+| **Official API** | `generate_thumbnails.py` | AI Studio API key + billing | **Blocked** on YouTube GCP project (`API_KEY_SERVICE_BLOCKED`) | Stable pipelines once key is fixed |
+| **Browser headed** | `gemini-thumbnails.py` | Google login → `gemini_storage_state.json` | **Yes** (Gemini Pro quota) | Batch thumbs without API billing |
+| **Browser headless** | `gemini-thumbnails.py --headless` | Same `storage_state` | **Conditional** — Google may redirect to sign-in | Unattended runs after `--verify-session` |
+| **Web RPC direct** | Not implemented | Cookie `SAPISIDHASH` | **No** — reverse-engineering only | Not recommended (ToS + fragility) |
+
+Details: [GEMINI_API_VS_PRO.md](GEMINI_API_VS_PRO.md) · [gemini/WEB_API_RESEARCH.md](gemini/WEB_API_RESEARCH.md)
+
+**Recommended path (current account):** use **`gemini-thumbnails.py`** (headed) until a new AI Studio key + billing is set up; then prefer **`generate_thumbnails.py`** for CI/batch stability.
+
+---
+
+## Browser automation (Gemini web)
+
+**Scripts:** `scripts/gemini-thumbnails.py` (CLI) · `scripts/thumbnails/gemini_web.py` (core)
+
+Uses **gemini.google.com** with your **Google AI Pro** subscription — **no** Generative Language API key. Session is saved like TikTok (`storage_state`), not shared with Cursor/Claude chat.
+
+### Pros / cons vs API
+
+| | Browser (Pro session) | Official API |
+|--|----------------------|--------------|
+| Cost | Already in Pro subscription | Per-image API billing |
+| Setup | One-time `--auth-only` login | AI Studio key + billing |
+| Stability | DOM selectors break on UI updates | SDK + model IDs |
+| Headless | Often blocked after auth | N/A |
+| ToS | Gray area (automation of consumer UI) | Supported |
+
+### One-time auth
+
+```powershell
+python scripts/gemini-thumbnails.py --auth-only
+```
+
+1. Chrome opens `gemini.google.com/app`
+2. Log in with your Google account (Gemini Pro)
+3. Press **ENTER** in the terminal
+4. Session saved to `%USERPROFILE%\.secrets\gemini_storage_state.json` (gitignored)
+
+### Verify headed vs headless
+
+```powershell
+python scripts/gemini-thumbnails.py --verify-session
+```
+
+If `headless_logged_in: False` but headed works, run batch **without** `--headless`.
+
+### Batch generation
+
+```powershell
+python scripts/gemini-thumbnails.py `
+  --faces-dir "$env:USERPROFILE\Pictures\faces" `
+  --videos-dir "$env:USERPROFILE\YOUTUBE\inbox\fortnite_mobile_20260530" `
+  --game "Fortnite Mobile"
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--headless` | No visible window (test with `--verify-session` first) |
+| `--sniff-network` | Log RPC URLs to `~/.secrets/gemini_network.log` (no auth headers) |
+| `--dry-run` | Plan paths/prompts only |
+| `--force` | Regenerate existing thumbs |
+
+**Human gate:** same as API path — review PNGs before upload.
+
+### Network research (internal web API)
+
+Manual capture while you generate one image:
+
+```powershell
+python scripts/thumbnails/inspect_gemini_network.py
+```
+
+Documented patterns (batchexecute RPC, no secrets): [gemini/WEB_API_RESEARCH.md](gemini/WEB_API_RESEARCH.md).
+
+### Playwright settings
+
+- `headless=False` for `--auth-only`; `channel="chrome"`, `locale="pt-BR"`, viewport **1920×1080**, `--start-minimized`
+- Batch: headed default; `--headless` optional (often blocked — use `--verify-session`)
+- Profile: `%USERPROFILE%\.secrets\browser-profile-gemini\` (gitignored)
+- `page.evaluate` fallbacks when Gemini UI selectors change (selectors are best-effort / TODO when UI shifts)
+
+**Session isolation:** Cursor, Claude, and other agents **do not** inherit `gemini_storage_state.json` — only this local Python CLI uses it.
+
+---
+
 ## API automation
 
 **Script:** `scripts/generate_thumbnails.py` (core: `scripts/thumbnails/gemini_generate.py`)
@@ -104,8 +193,9 @@ Features used by the script:
 ### One-time setup (API key)
 
 1. Open [Google AI Studio → API keys](https://aistudio.google.com/api-keys) (same Google account as Gemini Pro is fine).
-2. **Create API key** → pick or create a Google Cloud project → copy key once.
-3. Add to `%USERPROFILE%\.secrets\api-keys.json` (never commit):
+2. **Create API key in new project** — avoid reusing the YouTube/AdSense GCP project (`warm-alliance-457415-d2`). See [GEMINI_API_VS_PRO.md](GEMINI_API_VS_PRO.md).
+3. Prefer **Restrict to Gemini API only** when prompted.
+4. Add to `%USERPROFILE%\.secrets\api-keys.json` (never commit):
 
 ```json
 {
@@ -124,11 +214,14 @@ Also supported (first match wins): env `GEMINI_API_KEY` / `GOOGLE_API_KEY`, keys
 | Error | Likely cause | Fix |
 |-------|--------------|-----|
 | `API key missing` | No entry in api-keys / env | Follow setup above |
-| `403 API_KEY_SERVICE_BLOCKED` | Key created without Generative Language API, or API disabled in Cloud Console | [Create key at AI Studio](https://aistudio.google.com/api-keys) (not a random GCP key); enable **Generative Language API** on the linked project |
-| `403 PERMISSION_DENIED` (billing) | Image models require paid API quota | Enable billing on the Cloud project linked to the key |
+| `403 API_KEY_SERVICE_BLOCKED` | Chave/projeto GCP (ex.: `190666412179` / `warm-alliance-457415-d2`) **bloqueado** para `generativelanguage` — comum quando a chave veio do Console do projeto YouTube/AdSense | **Nova chave** em [AI Studio](https://aistudio.google.com/api-keys) → **projeto novo** (não reimportar o projeto OAuth). Ver [GEMINI_API_VS_PRO.md](GEMINI_API_VS_PRO.md) |
+| `403 PERMISSION_DENIED` (billing) | Modelos de **imagem** não existem no free tier da API | AI Studio → **Set up billing** no projeto da chave (paid tier). Créditos Cloud do Pro (~US$10/mês) podem cobrir uso pequeno |
+| `429 RESOURCE_EXHAUSTED` | Rate limit free tier | Backoff; ou billing para tier pago |
 | `Need N distinct face photos` | Not enough selfies in `--faces-dir` | Add more images or lower `--count` |
 
-Consumer **Google AI Pro** subscription alone does not unblock API errors — you still need a valid AI Studio key with image model access.
+**Reteste 2026-05-30:** chave em `google.api_key` → 403 em `ListModels`, `generateContent` texto e `gemini-2.5-flash-image`; `consumer: projects/190666412179`.
+
+Consumer **Google AI Pro** (browser) **não** desbloqueia API — assinatura ≠ API key. Guia completo: [GEMINI_API_VS_PRO.md](GEMINI_API_VS_PRO.md).
 
 ### CLI usage
 
@@ -165,10 +258,14 @@ flowchart LR
 | Piece | Status |
 |-------|--------|
 | Prompt templates (PT-BR, Alanzoka/Bistecon) | `scripts/thumbnails/prompts.py` |
-| Gemini client + face reference | `scripts/thumbnails/gemini_generate.py` |
-| CLI wrapper | `scripts/generate_thumbnails.py` |
-| `fortnite_long_batch --generate-thumbs` | Calls generator before copy/manifest |
+| Gemini API client + face reference | `scripts/thumbnails/gemini_generate.py` |
+| Gemini web (Playwright + storage_state) | `scripts/thumbnails/gemini_web.py` |
+| CLI — API path | `scripts/generate_thumbnails.py` |
+| CLI — browser path | `scripts/gemini-thumbnails.py` |
+| Network inspector | `scripts/thumbnails/inspect_gemini_network.py` |
+| `fortnite_long_batch --generate-thumbs` | Calls API generator before copy/manifest |
 | Frame grab (ffmpeg) | Not implemented — optional future |
+| Gemini web Playwright (`gemini-thumbnails.py`) | Auth, batch, best-effort DOM automation (fragile) |
 
 ### API key storage
 
@@ -210,6 +307,7 @@ Entregue 4 variações com hooks diferentes: {hook}
 | Never commit | Notes |
 |--------------|--------|
 | `youtube_token.json`, `youtube_client_secret.json` | OAuth |
+| `gemini_storage_state.json`, `gemini_network.log`, `browser-profile-gemini/` | Gemini web session / capture |
 | `api-keys.json` | Gemini / other APIs |
 | `*.db` | Schedule state |
 | Full-size thumbnail exports with personal email/watermarks | Optional `.gitignore` under inbox if syncing folder |
