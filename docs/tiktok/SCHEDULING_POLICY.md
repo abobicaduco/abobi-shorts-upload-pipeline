@@ -17,6 +17,7 @@ Companion: [HANDOFF.md](HANDOFF.md) · YouTube policy: [../youtube/SCHEDULING_PO
 - **Fonte da verdade:** SQLite em `%USERPROFILE%\.secrets\tiktok_schedule.db` (override: `--db`).
 - **Separado do YouTube:** mesmo conteúdo Granny 2, bancos distintos (`youtube_schedule.db` vs `tiktok_schedule.db`).
 - **Nunca double-book:** `ScheduleDB.is_slot_taken()` + view `daily_slot_occupancy`.
+- **Cap ~30 agendados:** TikTok Creator Center limita vídeos em estado *scheduled*; `fortnite_long_batch.py` não insere novas rows no SQLite quando `scheduled` ≥ 30 (arquivos ficam em `pending_tiktok/`).
 
 ### Comportamento padrão do upload (CRÍTICO)
 
@@ -30,16 +31,16 @@ Companion: [HANDOFF.md](HANDOFF.md) · YouTube policy: [../youtube/SCHEDULING_PO
 
 Conta **Creator** ou **Business** no TikTok é necessária para o toggle Schedule aparecer no desktop.
 
-### Estado atual (2026-05-29)
+### Estado atual (2026-05-30)
 
 | Métrica | Valor |
 |---------|-------|
-| Total | 51 clipes |
-| `uploaded` | 4 |
-| `pending` | 47 |
-| Slots pendentes | 2026-05-30 → 2026-06-15 |
+| Granny batch | 51 clipes |
+| `pending` (aprox.) | **~16** + uploads diários |
+| Fortnite long | 4 em `pending_tiktok/fortnite_mobile/` quando cap 30 |
+| Slots | 16/18/21 SP; long batch usa **19:00** quando há vaga no DB |
 
-Esperado após planejar: ~17 dias (3 slots/dia).
+Esperado: ~3 agendamentos por execução (`--upload-limit 3`).
 
 ### Comando diário (após planejar)
 

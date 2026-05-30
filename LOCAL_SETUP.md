@@ -39,7 +39,8 @@ Do **not** copy secrets into the project tree or commit them.
 
 | Path | Purpose |
 |------|---------|
-| `%USERPROFILE%\YOUTUBE\inbox` | Long-form videos for YouTube split |
+| `%USERPROFILE%\YOUTUBE\inbox\<batch_id>\` | Long-form ingest + manifest (see [docs/content/FORTNITE_MOBILE.md](docs/content/FORTNITE_MOBILE.md)) |
+| `%USERPROFILE%\YOUTUBE\pending_tiktok\` | TikTok copies awaiting Playwright upload |
 | `%USERPROFILE%\YOUTUBE\clips\..._tiktok\` | Split clips (YouTube + TikTok) |
 
 ## Docs for agents

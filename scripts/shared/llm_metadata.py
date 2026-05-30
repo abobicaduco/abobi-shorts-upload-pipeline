@@ -206,8 +206,10 @@ def _build_prompt(
         "NAO OLHE ATRAS, ARMADILHA, ESCONDERIJO, GRANDPA, ABOBICADUCO EM PANICO"
     )
     fname = clip_filename or f"clip_{clip_index:03d}.mp4"
-    return f"""Voce e copywriter SEO para o canal abobicaduco (gameplay horror PT-BR).
-Gere metadados UNICOS e variados para um clipe de {game} (Shorts).
+    is_long = "fortnite" in game.lower()
+    clip_kind = "video longo no YouTube/TikTok" if is_long else "Shorts"
+    return f"""Voce e copywriter SEO para o canal abobicaduco (gameplay PT-BR).
+Gere metadados UNICOS e variados para um clipe de {game} ({clip_kind}).
 
 Contexto:
 - clip_index: {clip_index}

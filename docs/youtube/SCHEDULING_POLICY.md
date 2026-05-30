@@ -14,34 +14,23 @@ Companion docs: [HANDOFF.md](HANDOFF.md) · [SCHEDULER.md](SCHEDULER.md)
 | Tipo | Quantidade | Horários (America/Sao_Paulo) | Status no código |
 |------|------------|------------------------------|------------------|
 | **Shorts** | **3 por dia** | 16:00 · 18:00 · 21:00 | ✅ Implementado |
-| **Vídeo longo** | **1 por dia** | Slot separado (TBD) | ⏳ Planejado — **não** está no código ainda |
+| **Vídeo longo** | **1 por dia** | **19:00** (`LONG_FORM_SLOT_HOUR`) | ✅ Via `scripts/fortnite_long_batch.py` |
 
 - Shorts e vídeo longo são **contagens separadas**: 3 Shorts **+** até 1 longo no mesmo dia calendário (quando long-form existir).
 - O calendário **pode estender meses à frente** — a regra diária continua valendo: **nunca mais de 3 Shorts por dia** nos slots 16/18/21.
 - **Fonte da verdade:** SQLite em `%USERPROFILE%\.secrets\youtube_schedule.db` (override: `--db`).
 - **Nunca double-book:** a view `daily_slot_occupancy` + `ScheduleDB.is_slot_taken()` bloqueiam `(slot_date, slot_hour)` ocupado.
 
-### Estado atual (2026-05-29)
+### Estado atual (2026-05-30)
 
 | Métrica | Valor |
 |---------|-------|
 | Total clipes Granny 2 Parte #2 | 51 |
-| Agendados no YouTube (`scheduled`) | **45** |
-| Pendentes de upload (`pending`) | **6** (#46–#51) |
-| Motivo da pausa | `uploadLimitExceeded` (quota diária da API) |
+| Alvo no YouTube | **51** rows `scheduled` |
+| Long-form Fortnite | 4 vídeos — **1/dia** @ **19:00** — ver [../content/FORTNITE_MOBILE.md](../content/FORTNITE_MOBILE.md) |
+| Auditoria | `python scripts/youtube-audit.py` se houver duplicatas ou Shorts privados fora do DB |
 
-**Slots já reservados no SQLite para os 6 pendentes:**
-
-| Clip | Data (SP) | Hora | Status |
-|------|-----------|------|--------|
-| #46 | 2026-06-13 | 21:00 | pending |
-| #47 | 2026-06-14 | 16:00 | pending |
-| #48 | 2026-06-14 | 18:00 | pending |
-| #49 | 2026-06-14 | 21:00 | pending |
-| #50 | 2026-06-15 | 16:00 | pending |
-| #51 | 2026-06-15 | 18:00 | pending |
-
-Não re-agendar manualmente — `--resume` usa os horários já gravados.
+Não re-agendar manualmente — `--resume` usa os horários já gravados no SQLite.
 
 ---
 
@@ -123,7 +112,7 @@ Até a coluna existir, tratar **todos** os rows como Shorts nos slots 16/18/21.
 4. **`--dry-run` primeiro** em fluxos novos ou após mudança de código.
 5. **Não commitar** `youtube_schedule.db`, tokens OAuth, ou `api-keys.json`.
 6. **Não fazer push** para GitHub salvo pedido explícito do usuário.
-7. Vídeo **long-form 1/dia** — documentado aqui; implementação futura com `content_type` + slot dedicado.
+7. Vídeo **long-form 1/dia** @ **19:00** — usar `fortnite_long_batch.py` ou `plan_uploads(..., slots=(19,))`; não usar slots 16/18/21 para longos.
 
 ---
 
@@ -134,18 +123,18 @@ Até a coluna existir, tratar **todos** os rows como Shorts nos slots 16/18/21.
 | Type | Count | Times (America/Sao_Paulo) | Code status |
 |------|-------|---------------------------|-------------|
 | **Shorts** | **3 per day** | 4pm · 6pm · 9pm (16, 18, 21) | ✅ Implemented |
-| **Long-form** | **1 per day** | Separate slot (TBD) | ⏳ Planned — **not in code yet** |
+| **Long-form** | **1 per day** | **7pm** (19:00 SP) | ✅ `fortnite_long_batch.py` / `LONG_FORM_SLOT_HOUR` |
 
 - Shorts and long-form are **separate daily budgets**: 3 Shorts **plus** up to 1 long video on the same calendar day (when long-form ships).
 - Schedule **may span months** — still **never more than 3 Shorts per day** in slots 16/18/21.
 - **Source of truth:** SQLite at `%USERPROFILE%\.secrets\youtube_schedule.db` (`--db` override).
 - **No double-booking:** `daily_slot_occupancy` view + `ScheduleDB.is_slot_taken()`.
 
-### Current state (2026-05-29)
+### Current state (2026-05-30)
 
-- **45/51** clips `scheduled` on YouTube; **6 pending** (#46–#51).
-- Stopped at `uploadLimitExceeded`.
-- Pending rows already have future publish slots in SQLite (2026-06-13 through 2026-06-15) — do not re-plan manually.
+- **51** Shorts target `scheduled` on YouTube (Granny batch).
+- **4** long-form Fortnite videos — 1/day at 19:00 SP — see [../content/FORTNITE_MOBILE.md](../content/FORTNITE_MOBILE.md).
+- Run `youtube-audit.py` if duplicate uploads or metadata drift are suspected.
 
 ---
 
@@ -178,4 +167,4 @@ Same as PT section: read this file, trust SQLite, max 3 Shorts/day, `--dry-run` 
 
 ---
 
-*Last updated: 2026-05-29 — Granny 2 Parte #2 batch; 6 clips ready for tomorrow's resume.*
+*Last updated: 2026-05-30 — Shorts + long-form (19:00) policies.*

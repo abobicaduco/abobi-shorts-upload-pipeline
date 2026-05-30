@@ -60,6 +60,8 @@ python scripts/tiktok-pipeline.py --resume --upload-limit 3
 | [docs/youtube/SCHEDULING_POLICY.md](docs/youtube/SCHEDULING_POLICY.md) | Política 3 Shorts/dia |
 | [docs/tiktok/SCHEDULING_POLICY.md](docs/tiktok/SCHEDULING_POLICY.md) | TikTok 3/dia + cap 30 |
 | [docs/AI_CONTINUATION.md](docs/AI_CONTINUATION.md) | Bootstrap de sessão para agentes |
+| [docs/content/FORTNITE_MOBILE.md](docs/content/FORTNITE_MOBILE.md) | Lote long-form Fortnite Mobile (2026-05-30) |
+| [docs/THUMBNAILS.md](docs/THUMBNAILS.md) | Miniaturas (Gemini manual + API futura) |
 | [AGENTS.md](AGENTS.md) | Instruções para agentes |
 | [LOCAL_SETUP.md](LOCAL_SETUP.md) | Caminhos canônicos + secrets |
 

@@ -31,6 +31,7 @@ MAX_RETRIES = 3
 # Shorts policy: exactly 3 publish slots per day (16h, 18h, 21h SP).
 # next_available_slots() never assigns two clips to the same (slot_date, slot_hour).
 DEFAULT_SHORTS_SLOTS = (16, 18, 21)
+LONG_FORM_SLOT_HOUR = 19  # separate from Shorts; max 1 long/day at this hour (SP)
 MAX_SHORTS_PER_DAY = 3
 QUOTA_ERROR_MARKERS = ("quotaexceeded", "uploadlimitexceeded", "dailylimitexceeded")
 

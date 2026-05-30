@@ -22,6 +22,8 @@
 | **Scheduling policy** | [docs/youtube/SCHEDULING_POLICY.md](youtube/SCHEDULING_POLICY.md) | [docs/tiktok/SCHEDULING_POLICY.md](tiktok/SCHEDULING_POLICY.md) |
 | **Shared clips folder** | `~/YOUTUBE/clips/abobicaduco_jogando_Granny_2_-_Parte_#2_tiktok/` (51 MP4) | Same folder |
 | **Metadata (LLM)** | Ollama local → `scripts/shared/llm_metadata.py` | Same module + `clips_metadata.json` |
+| **Long-form batch** | [docs/content/FORTNITE_MOBILE.md](content/FORTNITE_MOBILE.md) · `scripts/fortnite_long_batch.py` | Copies → `pending_tiktok/fortnite_mobile/` |
+| **Thumbnails** | [docs/THUMBNAILS.md](THUMBNAILS.md) | Manual Gemini today; `thumbnails.set` after upload |
 
 ---
 
@@ -41,6 +43,8 @@ abobi-shorts-upload-pipeline/     # YouTube + TikTok automation only
 ├── docs/
 │   ├── PLATFORMS.md                 # this file
 │   ├── AI_CONTINUATION.md
+│   ├── THUMBNAILS.md
+│   ├── content/FORTNITE_MOBILE.md
 │   ├── youtube/                     # HANDOFF, SCHEDULING_POLICY, SCHEDULER
 │   └── tiktok/                      # HANDOFF, SCHEDULING_POLICY
 ├── AGENTS.md
@@ -56,26 +60,42 @@ abobi-shorts-upload-pipeline/     # YouTube + TikTok automation only
 └── tiktok_storage_state.json
 
 %USERPROFILE%\YOUTUBE/
-├── inbox/                           # long-form drop zone (YouTube)
+├── inbox/<batch_id>/                # long-form + manifest (see FORTNITE_MOBILE.md)
+├── pending_youtube/                 # optional manual staging (workflow)
+├── pending_tiktok/fortnite_mobile/  # TikTok copies awaiting pipeline
 └── clips/..._tiktok/                # 51 split clips (both platforms)
 ```
 
 ---
 
-## Daily commands (tomorrow / AMANHÃ)
+## Daily commands (2026-05-30+)
 
-### YouTube — 6 Shorts still pending (quota stopped 2026-05-29)
+### YouTube Shorts — Granny batch (51 scheduled)
 
-Run **after** YouTube API daily quota resets (~24h):
+If any rows are still `pending` after quota reset:
 
 ```powershell
 cd C:\Users\carlo\Projects\abobi-shorts-upload-pipeline
 python scripts/youtube-pipeline.py --resume --upload-limit 6 --until-done
 ```
 
-Verify: `pending=0` in `youtube_schedule.db`.
+**Audit / duplicates:** `python scripts/youtube-audit.py` (channel scan + metadata; see [youtube/HANDOFF.md](youtube/HANDOFF.md)).
 
-### TikTok — 47 clips pending (3 uploaded 2026-05-29)
+Verify:
+
+```powershell
+sqlite3 $env:USERPROFILE\.secrets\youtube_schedule.db "SELECT status, COUNT(*) FROM scheduled_uploads GROUP BY status;"
+```
+
+### YouTube long-form — Fortnite Mobile (4 videos, 1/day @ 19:00)
+
+```powershell
+python scripts/fortnite_long_batch.py --upload-limit 1
+```
+
+Details: [docs/content/FORTNITE_MOBILE.md](content/FORTNITE_MOBILE.md).
+
+### TikTok — cap 30 scheduled; Granny + Fortnite pending
 
 Run **once per day** (max 3 uploads per run):
 
@@ -84,7 +104,7 @@ cd C:\Users\carlo\Projects\abobi-shorts-upload-pipeline
 python scripts/tiktok-pipeline.py --resume --upload-limit 3
 ```
 
-Do **not** use `--until-done` unless TikTok UI/rate limits allow — respect 3/day editorial policy.
+Do **not** use `--until-done` unless TikTok UI/rate limits allow — respect 3/day editorial policy and **~30** scheduled cap ([tiktok/SCHEDULING_POLICY.md](tiktok/SCHEDULING_POLICY.md)).
 
 Check DB:
 
@@ -164,11 +184,26 @@ Shortcut: [docs/AI_CONTINUATION.md](AI_CONTINUATION.md)
 
 ---
 
-## Status snapshot (2026-05-29)
+## Status snapshot (2026-05-30)
 
-| Platform | Total clips | Done | Pending | Notes |
-|----------|-------------|------|---------|-------|
-| YouTube | 51 | 45 scheduled | **6 pending** | Stopped: `uploadLimitExceeded` |
-| TikTok | 51 | **4 uploaded** | **47 pending** | Slots 2026-05-30 → 2026-06-15; clip #050 deduped `tiktok-1780090360` |
+| Platform | Total | State | Notes |
+|----------|-------|-------|-------|
+| **YouTube Shorts** | 51 | **51 scheduled** (target) | Run audit if duplicate titles/IDs suspected |
+| **YouTube long** | 4 | Inbox batch `fortnite_mobile_20260530` | 1 upload/day @ 19:00 SP |
+| **TikTok** | 51 Granny + 4 Fortnite | **~16** Granny pending + Fortnite in `pending_tiktok` | **≤30** scheduled in UI/DB; 3/day resume |
 
-*Updated: 2026-05-29*
+*Updated: 2026-05-30*
+
+---
+
+## Security (all platforms)
+
+| Never commit | Typical path |
+|--------------|--------------|
+| YouTube OAuth | `%USERPROFILE%\.secrets\youtube_client_secret.json`, `youtube_token.json` |
+| TikTok session | `tiktok_storage_state.json`, `scripts/browser-profile-tiktok/` |
+| API keys | `%USERPROFILE%\.secrets\api-keys.json` |
+| SQLite | `youtube_schedule.db`, `tiktok_schedule.db` |
+| Env with secrets | `scripts/.env` |
+
+Prefer env vars and `%USERPROFILE%\.secrets\` — see [LOCAL_SETUP.md](../LOCAL_SETUP.md) and [THUMBNAILS.md](THUMBNAILS.md#security).

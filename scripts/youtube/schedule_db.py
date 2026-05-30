@@ -164,6 +164,63 @@ class ScheduleDB:
             ).fetchone()
         return self._row_to_dataclass(row) if row else None
 
+    def get_by_video_id(self, video_id: str) -> Optional[ScheduledRow]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_uploads WHERE video_id = ? LIMIT 1",
+                (video_id,),
+            ).fetchone()
+        return self._row_to_dataclass(row) if row else None
+
+    def list_known_video_ids(self) -> set[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT video_id FROM scheduled_uploads
+                WHERE video_id IS NOT NULL AND TRIM(video_id) != ''
+                """
+            ).fetchall()
+        return {str(r["video_id"]) for r in rows}
+
+    def insert_audit_scheduled(
+        self,
+        video_id: str,
+        title: str,
+        scheduled_at_utc: datetime,
+        slot_date: str,
+        slot_hour: int,
+    ) -> int:
+        """Record a channel audit schedule row (synthetic file_path audit://video_id)."""
+        now = self._utc_now().isoformat()
+        file_path = f"audit://{video_id}"
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO scheduled_uploads (
+                    file_path, video_id, title, scheduled_at_utc, slot_date, slot_hour,
+                    status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    video_id = excluded.video_id,
+                    title = excluded.title,
+                    scheduled_at_utc = excluded.scheduled_at_utc,
+                    slot_date = excluded.slot_date,
+                    slot_hour = excluded.slot_hour,
+                    status = 'scheduled',
+                    last_error = NULL
+                """,
+                (
+                    file_path,
+                    video_id,
+                    title[:200],
+                    scheduled_at_utc.astimezone(timezone.utc).isoformat(),
+                    slot_date,
+                    slot_hour,
+                    now,
+                ),
+            )
+            return int(cur.lastrowid)
+
     def list_by_status(self, statuses: Sequence[str]) -> list[ScheduledRow]:
         placeholders = ",".join("?" for _ in statuses)
         with self._connect() as conn:

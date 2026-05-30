@@ -173,7 +173,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--upload-limit", type=int)
     p.add_argument("--upload-all", action="store_true")
     p.add_argument("--schedule-only", action="store_true")
-    p.add_argument("--resume", action="store_true")
+    p.add_argument(
+        "--audit-schedule",
+        action="store_true",
+        help="Audit channel: fix metadata + schedule private Shorts (see audit_and_schedule.py)",
+    )
+    p.add_argument("--audit-all-videos", action="store_true", help="With --audit-schedule: all videos")
+    p.add_argument("--audit-limit", type=int, help="With --audit-schedule: max videos to process")
     return p.parse_args(argv)
 
 
@@ -191,6 +197,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             settings.token_path,
         )
         return 0
+
+    if args.audit_schedule:
+        from .audit_and_schedule import main as audit_main
+
+        audit_argv: list[str] = []
+        if args.dry_run:
+            audit_argv.append("--dry-run")
+        if args.db:
+            audit_argv.extend(["--db", str(args.db)])
+        if args.batch:
+            audit_argv.extend(["--batch", str(args.batch)])
+        if args.game != "Granny 2":
+            audit_argv.extend(["--game", args.game])
+        if args.audit_all_videos:
+            audit_argv.append("--all-videos")
+        if args.audit_limit is not None:
+            audit_argv.extend(["--limit", str(args.audit_limit)])
+        return audit_main(audit_argv)
 
     if args.pipeline or args.resume:
         from .pipeline import run_pipeline
