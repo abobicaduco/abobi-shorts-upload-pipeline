@@ -35,7 +35,7 @@ Upload Shorts and clips to YouTube via **YouTube Data API v3** with user OAuth (
 ## Quick start
 
 ```powershell
-cd C:\path\to\abobiferramentas
+cd C:\Users\carlo\Projects\abobi-shorts-upload-pipeline
 pip install -r scripts/youtube/requirements.txt
 
 # Authenticate (once):
