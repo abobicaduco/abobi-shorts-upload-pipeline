@@ -329,6 +329,39 @@ def _auth_only_page(context: BrowserContext) -> Page:
     return context.new_page()
 
 
+def _open_auth_only_session(
+    pw: Any, profile_dir: Path
+) -> tuple[BrowserContext, Page]:
+    """Launch persistent Chrome profile; retry once if new_page / Target.createTarget fails."""
+    last_error: Optional[Exception] = None
+    for attempt in range(2):
+        if attempt > 0:
+            _kill_stale_chrome(profile_dir)
+        try:
+            context = _launch_gemini_auth_context(pw, profile_dir)
+        except Exception as exc:
+            last_error = exc
+            continue
+        try:
+            return context, _auth_only_page(context)
+        except Exception as exc:
+            last_error = exc
+            with suppress(Exception):
+                context.close()
+            LOGGER.warning(
+                "Auth-only tab open failed (attempt %s/2): %s",
+                attempt + 1,
+                exc,
+            )
+    detail = str(last_error) if last_error else "unknown"
+    raise RuntimeError(
+        _format_auth_browser_error(
+            profile_dir,
+            f"Falha ao abrir aba (Target.createTarget): {detail}",
+        )
+    )
+
+
 def _save_auth_storage_state(context: BrowserContext, path: Path) -> bool:
     try:
         context.storage_state(path=str(path))
@@ -464,62 +497,44 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
     settings = settings or GeminiWebSettings.from_args()
     settings.browser_profile.mkdir(parents=True, exist_ok=True)
     settings.storage_state.parent.mkdir(parents=True, exist_ok=True)
-    _kill_stale_chrome(settings.browser_profile)
 
     _set_auth_only_active(True)
+    context: Optional[BrowserContext] = None
+    close_after_login = False
     try:
         assert sync_playwright is not None
         with sync_playwright() as pw:
-            context: Optional[BrowserContext] = None
-            try:
-                context = _launch_gemini_auth_context(pw, settings.browser_profile)
-            except RuntimeError:
-                raise
-            except Exception as exc:
-                raise RuntimeError(
-                    _format_auth_browser_error(settings.browser_profile, str(exc))
-                ) from exc
+            context, page = _open_auth_only_session(pw, settings.browser_profile)
+            page.set_default_timeout(300_000)
+
+            LOGGER.info("Auth-only: navigating to %s", GEMINI_APP_URL)
+            page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=120_000)
+
+            print(
+                "Navegador aberto. Faca login no Gemini. "
+                "Quando terminar, volte aqui e pressione ENTER."
+            )
 
             try:
-                try:
-                    page = _auth_only_page(context)
-                except Exception as exc:
-                    raise RuntimeError(
-                        _format_auth_browser_error(
-                            settings.browser_profile,
-                            f"Falha ao abrir aba (Target.createTarget): {exc}",
-                        )
-                    ) from exc
+                input()
+            except EOFError:
+                print("\nEntrada cancelada. Sessao nao salva.\n")
+                close_after_login = True
+                return False
 
-                page.set_default_timeout(300_000)
-
-                print(
-                    "Faca login no Google (conta com Gemini Pro).\n"
-                    "Navegue ate gemini.google.com/app e confirme que o chat abre.\n"
-                    "NAO feche o navegador. Volte ao terminal e pressione ENTER.\n"
-                    f"Perfil local (nao compartilhe): {settings.browser_profile}"
-                )
-                LOGGER.info("Auth-only: navigating to %s", GEMINI_APP_URL)
-                page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=120_000)
-
-                try:
-                    input()
-                except EOFError:
-                    print("\nEntrada cancelada. Sessao nao salva.\n")
-                    return False
-
-                storage_path = settings.storage_state.resolve()
-                if not _save_auth_storage_state(context, storage_path):
-                    return False
-                print(f"\nSessao salva em: {storage_path}\n")
-                LOGGER.info("Session saved: storage_state=%s", storage_path)
-                return True
-            finally:
-                with suppress(Exception):
-                    if context is not None:
-                        context.close()
+            close_after_login = True
+            storage_path = settings.storage_state.resolve()
+            if not _save_auth_storage_state(context, storage_path):
+                return False
+            print(f"\nSessao salva em: {storage_path}\n")
+            LOGGER.info("Session saved: storage_state=%s", storage_path)
+            return True
     finally:
         _set_auth_only_active(False)
+        if close_after_login:
+            with suppress(Exception):
+                if context is not None:
+                    context.close()
 
 
 @contextmanager
@@ -822,6 +837,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("--auth-only", action="store_true", help="Login once; save storage_state")
     p.add_argument(
+        "--wait-login",
+        action="store_true",
+        help="Alias for --auth-only (keep browser open until ENTER)",
+    )
+    p.add_argument(
         "--verify-session",
         action="store_true",
         help="Test storage_state in headed + headless (no generation)",
@@ -860,7 +880,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         sniff_network=args.sniff_network,
     )
 
-    if args.auth_only:
+    if args.auth_only or args.wait_login:
         ok = run_auth_only(settings)
         return 0 if ok else 1
 
