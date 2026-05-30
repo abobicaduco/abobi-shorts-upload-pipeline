@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 import subprocess
 import time
@@ -74,7 +75,12 @@ def resolve_storage_state_path() -> Path:
     return Path.home() / ".secrets" / "gemini_storage_state.json"
 
 
-def resolve_browser_profile() -> Path:
+def resolve_browser_profile(*, use_system_chrome_profile: bool = False) -> Path:
+    if use_system_chrome_profile:
+        local_app = os.environ.get("LOCALAPPDATA")
+        if local_app:
+            return Path(local_app) / "Google" / "Chrome" / "User Data"
+        return Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
     return Path.home() / ".secrets" / "browser-profile-gemini"
 
 
@@ -228,14 +234,27 @@ class GeminiWebSettings:
     headless: bool = False
     sniff_network: bool = False
     network_log: Path = resolve_network_log_path()
+    use_system_chrome_profile: bool = False
+    disable_blink_automation: bool = False
 
     @classmethod
-    def from_args(cls, *, headless: bool = False, sniff_network: bool = False) -> GeminiWebSettings:
+    def from_args(
+        cls,
+        *,
+        headless: bool = False,
+        sniff_network: bool = False,
+        use_system_chrome_profile: bool = False,
+        disable_blink_automation: bool = False,
+    ) -> GeminiWebSettings:
         return cls(
             storage_state=resolve_storage_state_path(),
-            browser_profile=resolve_browser_profile(),
+            browser_profile=resolve_browser_profile(
+                use_system_chrome_profile=use_system_chrome_profile
+            ),
             headless=headless,
             sniff_network=sniff_network,
+            use_system_chrome_profile=use_system_chrome_profile,
+            disable_blink_automation=disable_blink_automation,
         )
 
 
@@ -288,37 +307,71 @@ def _format_auth_browser_error(profile_dir: Path, detail: str) -> str:
     )
 
 
-def _persistent_auth_context_kwargs(profile_dir: Path) -> dict[str, Any]:
+def _minimal_chrome_args(
+    *,
+    start_minimized: bool = True,
+    disable_blink_automation: bool = False,
+    headless: bool = False,
+) -> list[str]:
+    """Minimal launch flags — avoids Google bot-detection triggers."""
+    args: list[str] = [
+        f"--window-size={_PW_WINDOW_WIDTH},{_PW_WINDOW_HEIGHT}",
+    ]
+    if start_minimized:
+        args.insert(0, "--start-minimized")
+    if disable_blink_automation:
+        args.append("--disable-blink-features=AutomationControlled")
+    if headless:
+        args.append("--headless=new")
+    return args
+
+
+def _persistent_auth_context_kwargs(
+    profile_dir: Path,
+    *,
+    disable_blink_automation: bool = False,
+) -> dict[str, Any]:
     return {
         "user_data_dir": str(profile_dir),
         "headless": False,
+        "channel": "chrome",
         "locale": "pt-BR",
         "viewport": {"width": _PW_WINDOW_WIDTH, "height": _PW_WINDOW_HEIGHT},
-        "args": [
-            "--start-minimized",
-            f"--window-size={_PW_WINDOW_WIDTH},{_PW_WINDOW_HEIGHT}",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-        ],
+        "args": _minimal_chrome_args(disable_blink_automation=disable_blink_automation),
         "ignore_default_args": ["--enable-automation"],
     }
 
 
-def _launch_gemini_auth_context(pw: Any, profile_dir: Path) -> BrowserContext:
-    """Persistent context: installed Chrome first, then bundled Chromium."""
-    base = _persistent_auth_context_kwargs(profile_dir)
-    errors: list[str] = []
-    for label, channel in (("chrome", "chrome"), ("chromium", None)):
-        kwargs = dict(base)
-        if channel:
-            kwargs["channel"] = channel
-        try:
-            return pw.chromium.launch_persistent_context(**kwargs)
-        except Exception as exc:
-            errors.append(f"{label}: {exc}")
-            LOGGER.warning("Auth-only launch failed (%s): %s", label, exc)
-    raise RuntimeError(_format_auth_browser_error(profile_dir, "; ".join(errors)))
+def _ephemeral_browser_launch_kwargs(settings: GeminiWebSettings) -> dict[str, Any]:
+    return {
+        "headless": settings.headless,
+        "channel": "chrome",
+        "locale": "pt-BR",
+        "viewport": {"width": _PW_WINDOW_WIDTH, "height": _PW_WINDOW_HEIGHT},
+        "args": _minimal_chrome_args(
+            start_minimized=not settings.headless,
+            disable_blink_automation=settings.disable_blink_automation,
+            headless=settings.headless,
+        ),
+        "ignore_default_args": ["--enable-automation"],
+    }
+
+
+def _launch_gemini_auth_context(
+    pw: Any,
+    profile_dir: Path,
+    *,
+    disable_blink_automation: bool = False,
+) -> BrowserContext:
+    """Persistent context with installed Chrome (minimal args for Google login)."""
+    kwargs = _persistent_auth_context_kwargs(
+        profile_dir, disable_blink_automation=disable_blink_automation
+    )
+    try:
+        return pw.chromium.launch_persistent_context(**kwargs)
+    except Exception as exc:
+        LOGGER.warning("Auth-only Chrome launch failed: %s", exc)
+        raise RuntimeError(_format_auth_browser_error(profile_dir, str(exc))) from exc
 
 
 def _auth_only_page(context: BrowserContext) -> Page:
@@ -330,7 +383,10 @@ def _auth_only_page(context: BrowserContext) -> Page:
 
 
 def _open_auth_only_session(
-    pw: Any, profile_dir: Path
+    pw: Any,
+    profile_dir: Path,
+    *,
+    disable_blink_automation: bool = False,
 ) -> tuple[BrowserContext, Page]:
     """Launch persistent Chrome profile; retry once if new_page / Target.createTarget fails."""
     last_error: Optional[Exception] = None
@@ -338,7 +394,11 @@ def _open_auth_only_session(
         if attempt > 0:
             _kill_stale_chrome(profile_dir)
         try:
-            context = _launch_gemini_auth_context(pw, profile_dir)
+            context = _launch_gemini_auth_context(
+                pw,
+                profile_dir,
+                disable_blink_automation=disable_blink_automation,
+            )
         except Exception as exc:
             last_error = exc
             continue
@@ -495,7 +555,14 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
     """Open Chrome at gemini.google.com; save storage_state after Enter."""
     require_playwright()
     settings = settings or GeminiWebSettings.from_args()
-    settings.browser_profile.mkdir(parents=True, exist_ok=True)
+    if settings.use_system_chrome_profile:
+        print(
+            "\nAVISO: --use-system-chrome-profile usa o perfil Chrome do sistema.\n"
+            "Feche TODO o Google Chrome antes de continuar (risco de corrupcao de perfil).\n"
+            "Prefira o perfil isolado padrao (~/.secrets/browser-profile-gemini).\n"
+        )
+    else:
+        settings.browser_profile.mkdir(parents=True, exist_ok=True)
     settings.storage_state.parent.mkdir(parents=True, exist_ok=True)
 
     _set_auth_only_active(True)
@@ -504,15 +571,20 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
     try:
         assert sync_playwright is not None
         with sync_playwright() as pw:
-            context, page = _open_auth_only_session(pw, settings.browser_profile)
+            context, page = _open_auth_only_session(
+                pw,
+                settings.browser_profile,
+                disable_blink_automation=settings.disable_blink_automation,
+            )
             page.set_default_timeout(300_000)
 
-            LOGGER.info("Auth-only: navigating to %s", GEMINI_APP_URL)
-            page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=120_000)
+            LOGGER.info("Auth-only: navigating to %s", GEMINI_HOME_URL)
+            page.goto(GEMINI_HOME_URL, wait_until="domcontentloaded", timeout=120_000)
 
             print(
-                "Navegador aberto. Faca login no Gemini. "
-                "Quando terminar, volte aqui e pressione ENTER."
+                "Navegador aberto em gemini.google.com. Faca login manualmente "
+                "(complete 2FA no celular se pedido). "
+                "Quando o Gemini carregar, volte aqui e pressione ENTER."
             )
 
             try:
@@ -548,20 +620,7 @@ def gemini_browser(settings: GeminiWebSettings) -> Iterator[tuple[BrowserContext
     _kill_stale_chrome(settings.browser_profile)
 
     assert sync_playwright is not None
-    kwargs: dict[str, Any] = {
-        "headless": settings.headless,
-        "channel": "chrome",
-        "locale": "pt-BR",
-        "viewport": {"width": _PW_WINDOW_WIDTH, "height": _PW_WINDOW_HEIGHT},
-        "args": [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-        ],
-        "ignore_default_args": ["--enable-automation"],
-    }
-    if settings.headless:
-        kwargs["args"].append("--headless=new")
+    kwargs = _ephemeral_browser_launch_kwargs(settings)
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(**kwargs)
@@ -861,6 +920,22 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Log Gemini RPC URLs to ~/.secrets/gemini_network.log (no auth headers)",
     )
+    p.add_argument(
+        "--use-system-chrome-profile",
+        action="store_true",
+        help=(
+            "Use %LOCALAPPDATA%/Google/Chrome/User Data instead of isolated profile "
+            "(OFF by default — close all Chrome windows first; risky)"
+        ),
+    )
+    p.add_argument(
+        "--disable-blink-automation",
+        action="store_true",
+        help=(
+            "Add --disable-blink-features=AutomationControlled (optional; "
+            "try if login still fails after default minimal flags)"
+        ),
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -878,6 +953,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     settings = GeminiWebSettings.from_args(
         headless=args.headless,
         sniff_network=args.sniff_network,
+        use_system_chrome_profile=args.use_system_chrome_profile,
+        disable_blink_automation=args.disable_blink_automation,
     )
 
     if args.auth_only or args.wait_login:

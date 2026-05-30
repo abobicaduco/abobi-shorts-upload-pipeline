@@ -110,12 +110,27 @@ Uses **gemini.google.com** with your **Google AI Pro** subscription — **no** G
 python scripts/gemini-thumbnails.py --auth-only
 ```
 
-1. Chrome opens `gemini.google.com/app`
-2. Log in with your Google account (Gemini Pro)
+1. Chrome opens `gemini.google.com` (redirects to Google sign-in if needed)
+2. Log in manually with your Google account (Gemini Pro) — complete **2FA on your phone** if prompted
 3. Press **ENTER** in the terminal
 4. Session saved to `%USERPROFILE%\.secrets\gemini_storage_state.json` (gitignored)
 
 If launch fails with *Target.createTarget* / profile lock: close all Chrome windows, delete `Singleton*` files under `%USERPROFILE%\.secrets\browser-profile-gemini\` (Chrome closed), then re-run `--auth-only`.
+
+**Google login spins forever / “unsupported command-line flag” banner:** Google blocks automated browsers with flags like `--no-sandbox` or `--disable-dev-shm-usage`. The script now uses minimal Chrome args only (`--start-minimized`, window size, `locale=pt-BR`, `ignore_default_args=["--enable-automation"]`). If login still loops:
+
+1. Close the script Chrome window completely.
+2. Re-run `--auth-only` (do **not** paste credentials into the terminal — type only in the browser).
+3. Complete 2FA on your phone when Google asks.
+4. Optional last resort: `--disable-blink-automation` (adds `--disable-blink-features=AutomationControlled`).
+5. **Do not** use `--use-system-chrome-profile` unless you understand the risk (must close all Chrome first).
+
+**Git Bash retry:**
+
+```bash
+cd /c/Users/carlo/Projects/abobi-shorts-upload-pipeline
+python scripts/gemini-thumbnails.py --auth-only
+```
 
 ### Verify headed vs headless
 
@@ -138,6 +153,8 @@ python scripts/gemini-thumbnails.py `
 |------|---------|
 | `--headless` | No visible window (test with `--verify-session` first) |
 | `--sniff-network` | Log RPC URLs to `~/.secrets/gemini_network.log` (no auth headers) |
+| `--use-system-chrome-profile` | Use real Chrome profile (OFF default — close all Chrome; risky) |
+| `--disable-blink-automation` | Optional stealth flag if default login still fails |
 | `--dry-run` | Plan paths/prompts only |
 | `--force` | Regenerate existing thumbs |
 
@@ -156,8 +173,10 @@ Documented patterns (batchexecute RPC, no secrets): [gemini/WEB_API_RESEARCH.md]
 ### Playwright settings
 
 - `headless=False` for `--auth-only`; `channel="chrome"`, `locale="pt-BR"`, viewport **1920×1080**, `--start-minimized`
+- **Removed** (trigger Google bot detection): `--no-sandbox`, `--disable-dev-shm-usage`, `--disable-web-security`
+- `ignore_default_args=["--enable-automation"]` on launch; optional `--disable-blink-automation` if login still fails
 - Batch: headed default; `--headless` optional (often blocked — use `--verify-session`)
-- Profile: `%USERPROFILE%\.secrets\browser-profile-gemini\` (gitignored)
+- Profile: `%USERPROFILE%\.secrets\browser-profile-gemini\` (gitignored); `--use-system-chrome-profile` only when needed
 - `page.evaluate` fallbacks when Gemini UI selectors change (selectors are best-effort / TODO when UI shifts)
 
 **Session isolation:** Cursor, Claude, and other agents **do not** inherit `gemini_storage_state.json` — only this local Python CLI uses it.

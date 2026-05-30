@@ -108,9 +108,9 @@ headless_logged_in: True|False  ← se False, usar headed para batch
 
 Mitigações headless (best-effort no script):
 
-- `channel="chrome"`, `--disable-blink-features=AutomationControlled`
-- `ignore_default_args=["--enable-automation"]`
-- `--headless=new` (Chromium)
+- `channel="chrome"`, `ignore_default_args=["--enable-automation"]`
+- `--headless=new` (Chromium) apenas em batch com `--headless`
+- Opcional: `--disable-blink-automation` se login headed falhar
 
 Se headless falhar: rodar batch **sem** `--headless` (janela minimizada manualmente).
 
