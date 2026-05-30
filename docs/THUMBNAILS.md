@@ -115,6 +115,8 @@ python scripts/gemini-thumbnails.py --auth-only
 3. Press **ENTER** in the terminal
 4. Session saved to `%USERPROFILE%\.secrets\gemini_storage_state.json` (gitignored)
 
+If launch fails with *Target.createTarget* / profile lock: close all Chrome windows, delete `Singleton*` files under `%USERPROFILE%\.secrets\browser-profile-gemini\` (Chrome closed), then re-run `--auth-only`.
+
 ### Verify headed vs headless
 
 ```powershell

@@ -11,7 +11,7 @@ import logging
 import re
 import subprocess
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -276,6 +276,77 @@ def _kill_stale_chrome(profile_dir: Path) -> None:
             pass
 
 
+def _format_auth_browser_error(profile_dir: Path, detail: str) -> str:
+    return (
+        "Nao foi possivel abrir o navegador para login no Gemini.\n"
+        "Tente:\n"
+        "  1. Fechar todas as janelas do Google Chrome (incluindo em segundo plano).\n"
+        "  2. Se o erro persistir, apague os arquivos Singleton* nesta pasta (com Chrome fechado):\n"
+        f"     {profile_dir}\n"
+        "  3. Rode de novo: python scripts/gemini-thumbnails.py --auth-only\n"
+        f"Detalhe tecnico: {detail}"
+    )
+
+
+def _persistent_auth_context_kwargs(profile_dir: Path) -> dict[str, Any]:
+    return {
+        "user_data_dir": str(profile_dir),
+        "headless": False,
+        "locale": "pt-BR",
+        "viewport": {"width": _PW_WINDOW_WIDTH, "height": _PW_WINDOW_HEIGHT},
+        "args": [
+            "--start-minimized",
+            f"--window-size={_PW_WINDOW_WIDTH},{_PW_WINDOW_HEIGHT}",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+        ],
+        "ignore_default_args": ["--enable-automation"],
+    }
+
+
+def _launch_gemini_auth_context(pw: Any, profile_dir: Path) -> BrowserContext:
+    """Persistent context: installed Chrome first, then bundled Chromium."""
+    base = _persistent_auth_context_kwargs(profile_dir)
+    errors: list[str] = []
+    for label, channel in (("chrome", "chrome"), ("chromium", None)):
+        kwargs = dict(base)
+        if channel:
+            kwargs["channel"] = channel
+        try:
+            return pw.chromium.launch_persistent_context(**kwargs)
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+            LOGGER.warning("Auth-only launch failed (%s): %s", label, exc)
+    raise RuntimeError(_format_auth_browser_error(profile_dir, "; ".join(errors)))
+
+
+def _auth_only_page(context: BrowserContext) -> Page:
+    """Single tab for auth-only — reuse default page; avoid close-all + new_page."""
+    open_pages = [p for p in context.pages if not p.is_closed()]
+    if open_pages:
+        return open_pages[0]
+    return context.new_page()
+
+
+def _save_auth_storage_state(context: BrowserContext, path: Path) -> bool:
+    try:
+        context.storage_state(path=str(path))
+        return True
+    except Exception as exc:
+        detail = str(exc).lower()
+        if "target" in detail and "closed" in detail:
+            LOGGER.error("Browser closed before storage_state could be saved.")
+            print(
+                "\nO navegador foi fechado antes de salvar a sessao.\n"
+                "Rode novamente: python scripts/gemini-thumbnails.py --auth-only\n"
+            )
+        else:
+            LOGGER.exception("Failed to save storage_state: %s", exc)
+            print(f"\nNao foi possivel salvar a sessao: {exc}\n")
+        return False
+
+
 def _sanitize_url(url: str) -> str:
     """Strip sensitive query params from logged URLs."""
     try:
@@ -399,35 +470,34 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
     try:
         assert sync_playwright is not None
         with sync_playwright() as pw:
-            context = pw.chromium.launch_persistent_context(
-                user_data_dir=str(settings.browser_profile),
-                headless=False,
-                channel="chrome",
-                locale="pt-BR",
-                viewport={"width": _PW_WINDOW_WIDTH, "height": _PW_WINDOW_HEIGHT},
-                args=[
-                    "--start-minimized",
-                    f"--window-size={_PW_WINDOW_WIDTH},{_PW_WINDOW_HEIGHT}",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-                ignore_default_args=["--enable-automation"],
-            )
+            context: Optional[BrowserContext] = None
             try:
-                for existing in list(context.pages):
-                    try:
-                        existing.close()
-                    except Exception:
-                        pass
+                context = _launch_gemini_auth_context(pw, settings.browser_profile)
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                raise RuntimeError(
+                    _format_auth_browser_error(settings.browser_profile, str(exc))
+                ) from exc
 
-                page = context.new_page()
+            try:
+                try:
+                    page = _auth_only_page(context)
+                except Exception as exc:
+                    raise RuntimeError(
+                        _format_auth_browser_error(
+                            settings.browser_profile,
+                            f"Falha ao abrir aba (Target.createTarget): {exc}",
+                        )
+                    ) from exc
+
                 page.set_default_timeout(300_000)
 
                 print(
                     "Faca login no Google (conta com Gemini Pro).\n"
                     "Navegue ate gemini.google.com/app e confirme que o chat abre.\n"
-                    "NAO feche o navegador. Volte ao terminal e pressione ENTER."
+                    "NAO feche o navegador. Volte ao terminal e pressione ENTER.\n"
+                    f"Perfil local (nao compartilhe): {settings.browser_profile}"
                 )
                 LOGGER.info("Auth-only: navigating to %s", GEMINI_APP_URL)
                 page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=120_000)
@@ -439,15 +509,15 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
                     return False
 
                 storage_path = settings.storage_state.resolve()
-                context.storage_state(path=str(storage_path))
+                if not _save_auth_storage_state(context, storage_path):
+                    return False
                 print(f"\nSessao salva em: {storage_path}\n")
                 LOGGER.info("Session saved: storage_state=%s", storage_path)
                 return True
             finally:
-                try:
-                    context.close()
-                except Exception:
-                    LOGGER.exception("Failed to close browser after auth-only.")
+                with suppress(Exception):
+                    if context is not None:
+                        context.close()
     finally:
         _set_auth_only_active(False)
 
