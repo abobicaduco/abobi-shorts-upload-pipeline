@@ -5,14 +5,20 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
 from playwright.sync_api import Page, TimeoutError as PWTimeout
 
+from shared.paths import PROJECT_SECRETS_DIR, project_secret
 from .auth import ensure_session, is_auth_only_active, tiktok_browser
 from .config import TIKTOK_UPLOAD_URL, TikTokSettings
 
@@ -21,8 +27,8 @@ LOGGER = logging.getLogger(__name__)
 # Emergency guard: never publish immediately unless explicitly allowed AND flag disabled.
 SCHEDULE_ONLY = True
 SCHEDULE_UI_TIMEOUT_SEC = 30
-DEBUG_DIR = Path.home() / ".secrets" / "tiktok_debug"
-NETWORK_LOG_PATH = Path.home() / ".secrets" / "tiktok_schedule_upload_network.log"
+DEBUG_DIR = PROJECT_SECRETS_DIR / "tiktok_debug"
+NETWORK_LOG_PATH = project_secret("tiktok_schedule_upload_network.log")
 
 CAPTION_SELECTORS = (
     '[data-e2e="caption-editor"] div[contenteditable="true"]',
@@ -498,7 +504,7 @@ def _set_datetime_via_combobox_display(page: Page, when_local: datetime) -> tupl
 
 
 def _save_debug_artifact(page: Page, tag: str) -> None:
-    out_dir = Path.home() / ".secrets"
+    out_dir = DEBUG_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"tiktok_schedule_debug_{tag}_{int(time.time())}.png"
     try:

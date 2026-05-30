@@ -24,6 +24,7 @@ from shared.llm_metadata import (
     resolve_ollama_model,
     save_metadata_manifest,
 )
+from shared.paths import project_secret_with_home_fallback
 from youtube.config import BatchConfig, YouTubeSettings, load_env_file
 from youtube.manifest import load_batch_yaml, load_manifest_csv
 from youtube.schedule_db import ScheduleDB, default_db_path
@@ -447,7 +448,7 @@ def run(argv: Optional[list[str]] = None) -> int:
     )
     print_schedule_plan(planned, tz_name=tz_name)
 
-    tt_db_path = args.tiktok_db or (Path.home() / ".secrets" / "tiktok_schedule.db")
+    tt_db_path = args.tiktok_db or project_secret_with_home_fallback("tiktok_schedule.db")
     tt_inserted = _register_tiktok_pending(
         pending_tt,
         rows,

@@ -5,10 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.paths import PROJECT_SECRETS_DIR
 from .secrets_store import API_KEYS_PATH, YOUTUBE_OAUTH_KEY, get_service_key
 
 LOGGER = logging.getLogger(__name__)
@@ -16,10 +22,10 @@ LOGGER = logging.getLogger(__name__)
 # Default inbox (override with YOUTUBE_INBOX). E:/YOUTUBE/inbox on some machines.
 _DEFAULT_INBOX = Path.home() / "YOUTUBE" / "inbox"
 
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 _ENV_FILE = _SCRIPTS_DIR / ".env"
 _MODULE_SECRETS_DIR = Path(__file__).resolve().parent / ".secrets"
 _USER_SECRETS_SCRIPTS = Path.home() / ".secrets" / "scripts"
+_PROJECT_SECRETS = PROJECT_SECRETS_DIR
 
 _DEFAULT_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 _DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -153,6 +159,7 @@ def resolve_oauth_client() -> OAuthClientSource:
             )
 
     candidates: list[Path] = [
+        _PROJECT_SECRETS / "youtube_client_secret.json",
         _USER_SECRETS_SCRIPTS / "youtube_client_secret.json",
         _USER_SECRETS_SCRIPTS / "client_secret.json",
         _MODULE_SECRETS_DIR / "client_secret.json",
@@ -202,6 +209,7 @@ def resolve_token_path() -> tuple[Path, list[Path]]:
         return env_path, [env_path]
 
     candidates: list[Path] = [
+        _PROJECT_SECRETS / "youtube_token.json",
         _USER_SECRETS_SCRIPTS / "youtube_token.json",
         _MODULE_SECRETS_DIR / "token.json",
     ]

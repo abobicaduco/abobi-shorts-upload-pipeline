@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.paths import (
+    PROJECT_SECRETS_DIR,
+    project_secret,
+    project_secret_dir_with_fallbacks,
+    project_secret_with_home_fallback,
+)
+
 _ENV_FILE = _SCRIPTS_DIR / ".env"
 
 DEFAULT_CLIPS_DIR = (
@@ -48,21 +59,25 @@ def resolve_storage_state_path() -> Path:
     raw = os.environ.get("TIKTOK_STORAGE_STATE", "").strip()
     if raw:
         return Path(raw)
-    return Path.home() / ".secrets" / "tiktok_storage_state.json"
+    return project_secret_with_home_fallback("tiktok_storage_state.json")
 
 
 def resolve_browser_profile_dir() -> Path:
     raw = os.environ.get("TIKTOK_BROWSER_PROFILE", "").strip()
     if raw:
         return Path(raw)
-    return _SCRIPTS_DIR / "browser-profile-tiktok"
+    return project_secret_dir_with_fallbacks(
+        "browser-profile-tiktok",
+        _SCRIPTS_DIR / "browser-profile-tiktok",
+        Path.home() / ".secrets" / "browser-profile-tiktok",
+    )
 
 
 def resolve_schedule_db_path() -> Path:
     raw = os.environ.get("TIKTOK_SCHEDULE_DB", "").strip()
     if raw:
         return Path(raw)
-    return Path.home() / ".secrets" / "tiktok_schedule.db"
+    return project_secret_with_home_fallback("tiktok_schedule.db")
 
 
 @dataclass

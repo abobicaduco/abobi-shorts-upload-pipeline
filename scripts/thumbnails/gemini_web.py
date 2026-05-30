@@ -32,6 +32,13 @@ from thumbnails.gemini_generate import (
     _resize_to_target,
     assign_faces,
 )
+from shared.paths import (
+    PROJECT_LOGS_DIR,
+    PROJECT_SECRETS_DIR,
+    project_secret,
+    project_secret_dir_with_fallbacks,
+    project_secret_with_home_fallback,
+)
 from thumbnails.prompts import build_prompt, list_known_games
 
 LOGGER = logging.getLogger(__name__)
@@ -40,7 +47,6 @@ GEMINI_APP_URL = "https://gemini.google.com/app"
 GEMINI_HOME_URL = "https://gemini.google.com/"
 
 CDP_DEFAULT_URL = "http://127.0.0.1:9222"
-CDP_DEBUG_PROFILE_DIR = Path.home() / ".secrets" / "chrome-debug-gemini"
 
 _PW_WINDOW_WIDTH = 1920
 _PW_WINDOW_HEIGHT = 1080
@@ -73,8 +79,39 @@ else:
     _IMPORT_ERROR = None
 
 
+def resolve_cdp_debug_profile_dir() -> Path:
+    return project_secret_dir_with_fallbacks(
+        "chrome-debug-gemini",
+        Path.home() / ".secrets" / "chrome-debug-gemini",
+    )
+
+
 def resolve_storage_state_path() -> Path:
-    return Path.home() / ".secrets" / "gemini_storage_state.json"
+    raw = os.environ.get("GEMINI_STORAGE_STATE", "").strip()
+    if raw:
+        return Path(raw)
+    return project_secret_with_home_fallback("gemini_storage_state.json")
+
+
+def resolve_face_rotation_state_path() -> Path:
+    return project_secret_with_home_fallback("gemini_face_index.txt")
+
+
+def resolve_test_output_path() -> Path:
+    """Default single-test thumbnail path (home YOUTUBE, then project .secrets)."""
+    home = Path.home() / "YOUTUBE" / "thumbnails_test" / "test_gemini_web_thumb.png"
+    if home.parent.exists() or (Path.home() / "YOUTUBE").exists():
+        return home
+    return PROJECT_SECRETS_DIR / "test_gemini_web_thumb.png"
+
+
+TEST_WEB_PROMPT = (
+    "Fortnite Mobile YouTube thumbnail PT-BR, estilo Alanzoka, rosto com brilho neon, "
+    'texto grande "TESTE THUMB", composicao 16:9, alto contraste, cores saturadas. '
+    "Entregue apenas a imagem final."
+)
+
+IMAGE_GEN_TIMEOUT_MS = 600_000
 
 
 def resolve_browser_profile(*, use_system_chrome_profile: bool = False) -> Path:
@@ -83,11 +120,15 @@ def resolve_browser_profile(*, use_system_chrome_profile: bool = False) -> Path:
         if local_app:
             return Path(local_app) / "Google" / "Chrome" / "User Data"
         return Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
-    return Path.home() / ".secrets" / "browser-profile-gemini"
+    return project_secret_dir_with_fallbacks(
+        "browser-profile-gemini",
+        Path.home() / ".secrets" / "browser-profile-gemini",
+        _SCRIPTS_DIR / "browser-profile-gemini",
+    )
 
 
 def resolve_network_log_path() -> Path:
-    return Path.home() / ".secrets" / "gemini_network.log"
+    return project_secret("gemini_network.log")
 
 
 _LOGGED_IN_JS = """
@@ -228,6 +269,60 @@ _LATEST_IMAGE_JS = """
 }
 """
 
+_ENABLE_IMAGE_MODE_JS = """
+() => {
+  const labels = [
+    'create image', 'criar imagem', 'gerar imagem', 'generate image',
+    'image', 'imagem', 'nano banana', 'imagens',
+  ];
+  const clickables = [
+    ...document.querySelectorAll('button, [role="button"], [role="menuitem"], a, mat-option, li'),
+  ];
+  for (const el of clickables) {
+    const t = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase().trim();
+    if (!t) continue;
+    if (labels.some(l => t.includes(l))) {
+      el.click();
+      return t.slice(0, 80);
+    }
+  }
+  const tools = [...document.querySelectorAll('button, [role="button"]')].find(el => {
+    const t = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+    return t.includes('tool') || t.includes('ferramenta');
+  });
+  if (tools) {
+    tools.click();
+    return 'tools-menu';
+  }
+  return null;
+}
+"""
+
+_SET_ASPECT_RATIO_JS = """
+(ratio) => {
+  const want = (ratio || '16:9').toLowerCase();
+  const clickables = [
+    ...document.querySelectorAll('button, [role="button"], [role="menuitem"], mat-option, li, span'),
+  ];
+  for (const el of clickables) {
+    const t = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+    if (t.includes(want) || t.includes('16:9') || t.includes('widescreen')) {
+      el.click();
+      return t.slice(0, 80);
+    }
+  }
+  const ratioBtn = clickables.find(el => {
+    const t = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+    return t.includes('aspect') || t.includes('propor') || t.includes('formato');
+  });
+  if (ratioBtn) {
+    ratioBtn.click();
+    return 'aspect-menu';
+  }
+  return null;
+}
+"""
+
 
 @dataclass
 class GeminiWebSettings:
@@ -283,7 +378,7 @@ def _set_auth_only_active(active: bool) -> None:
 
 
 def _is_isolated_gemini_profile(profile_dir: Path) -> bool:
-    """True for ~/.secrets/browser-profile-gemini only — never touch system Chrome."""
+    """True for project .secrets/browser-profile-gemini only — never touch system Chrome."""
     try:
         return profile_dir.resolve() == resolve_browser_profile().resolve()
     except OSError:
@@ -315,7 +410,8 @@ def _format_auth_browser_error(profile_dir: Path, detail: str) -> str:
 
 
 def _print_auth_cdp_instructions(cdp_url: str) -> None:
-    profile = CDP_DEBUG_PROFILE_DIR
+    profile = resolve_cdp_debug_profile_dir()
+    profile_posix = profile.as_posix()
     chrome_exe = Path(
         os.environ.get(
             "CHROME_EXECUTABLE",
@@ -333,7 +429,7 @@ def _print_auth_cdp_instructions(cdp_url: str) -> None:
         "   (Git Bash — uma linha:)\n\n"
         f'   "/c/Program Files/Google/Chrome/Application/chrome.exe" '
         f'--remote-debugging-port=9222 '
-        f'--user-data-dir="$HOME/.secrets/chrome-debug-gemini"\n\n'
+        f'--user-data-dir="{profile_posix}"\n\n'
         f"3) No Chrome que abriu, va para {GEMINI_HOME_URL} e faca login "
         "(senha e 2FA so no navegador — nunca no terminal).\n"
         f"4) Volte aqui e pressione ENTER para conectar em {cdp_url} e salvar a sessao.\n"
@@ -385,8 +481,6 @@ def _ephemeral_browser_launch_kwargs(settings: GeminiWebSettings) -> dict[str, A
     return {
         "headless": settings.headless,
         "channel": "chrome",
-        "locale": "pt-BR",
-        "viewport": {"width": _PW_WINDOW_WIDTH, "height": _PW_WINDOW_HEIGHT},
         "args": _minimal_chrome_args(
             start_minimized=not settings.headless,
             disable_blink_automation=settings.disable_blink_automation,
@@ -394,6 +488,16 @@ def _ephemeral_browser_launch_kwargs(settings: GeminiWebSettings) -> dict[str, A
         ),
         "ignore_default_args": ["--enable-automation"],
     }
+
+
+def _ephemeral_browser_context_kwargs(settings: GeminiWebSettings) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "locale": "pt-BR",
+        "viewport": {"width": _PW_WINDOW_WIDTH, "height": _PW_WINDOW_HEIGHT},
+    }
+    if settings.storage_state.is_file():
+        kwargs["storage_state"] = str(settings.storage_state)
+    return kwargs
 
 
 def _launch_gemini_auth_context(
@@ -663,7 +767,7 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
             "\nAVISO: --use-system-chrome-profile usa o perfil Chrome do sistema.\n"
             "Feche TODO o Google Chrome antes de continuar (risco de corrupcao de perfil).\n"
             "Prefira --auth-cdp (Chrome real) ou o perfil isolado "
-            "(~/.secrets/browser-profile-gemini).\n"
+            "(<repo>/.secrets/browser-profile-gemini).\n"
         )
     else:
         settings.browser_profile.mkdir(parents=True, exist_ok=True)
@@ -703,6 +807,19 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
                 print("\nEntrada cancelada. Sessao nao salva.\n")
                 close_after_login = True
                 return False
+            except KeyboardInterrupt:
+                print(
+                    "\nInterrompido (Ctrl+C). Tentando salvar a sessao antes de sair...\n"
+                    "Da proxima vez, pressione ENTER apos o login (Ctrl+C pode falhar se o navegador ja fechou).\n"
+                )
+                close_after_login = True
+                storage_path = settings.storage_state.resolve()
+                if context is not None and _save_auth_storage_state(context, storage_path):
+                    print(f"\nSessao salva em: {storage_path}\n")
+                    LOGGER.info("Session saved after KeyboardInterrupt: storage_state=%s", storage_path)
+                    return True
+                print("\nSessao NAO salva. Use --auth-cdp ou --auth-only e pressione ENTER.\n")
+                return False
 
             close_after_login = True
             storage_path = settings.storage_state.resolve()
@@ -734,10 +851,7 @@ def gemini_browser(settings: GeminiWebSettings) -> Iterator[tuple[BrowserContext
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(**kwargs)
-        context_kwargs: dict[str, Any] = {}
-        if settings.storage_state.is_file():
-            context_kwargs["storage_state"] = str(settings.storage_state)
-        context = browser.new_context(**context_kwargs)
+        context = browser.new_context(**_ephemeral_browser_context_kwargs(settings))
         page = context.new_page()
         page.set_default_timeout(300_000)
         flush_network: Callable[[], None] = lambda: None
@@ -794,6 +908,102 @@ def verify_session(settings: GeminiWebSettings) -> dict[str, Any]:
             result[key_ok] = False
 
     return result
+
+
+def _save_failure_screenshot(page: Page, step: str) -> Optional[Path]:
+    """Save debug screenshot under .local/logs (gitignored)."""
+    try:
+        log_dir = PROJECT_LOGS_DIR / "gemini_web"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_step = re.sub(r"[^\w\-]+", "_", step)[:48]
+        path = log_dir / f"fail_{safe_step}_{ts}.png"
+        page.screenshot(path=str(path), full_page=True)
+        LOGGER.error("Failure screenshot: %s (step=%s)", path, step)
+        return path
+    except Exception:
+        LOGGER.debug("Could not save failure screenshot", exc_info=True)
+        return None
+
+
+def _pick_rotated_face(faces_dir: Path) -> Path:
+    """Round-robin through jpg/png in faces_dir; EXIF-transpose to temp if needed."""
+    extensions = {".jpg", ".jpeg", ".png"}
+    faces = _iter_media(faces_dir, extensions)
+    state_path = resolve_face_rotation_state_path()
+    index = 0
+    if state_path.is_file():
+        with suppress(ValueError, OSError):
+            index = int(state_path.read_text(encoding="utf-8").strip()) % len(faces)
+    face = faces[index]
+    next_index = (index + 1) % len(faces)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(str(next_index), encoding="utf-8")
+    LOGGER.info("Face rotation: %s (%s/%s)", face.name, index + 1, len(faces))
+
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(face) as img:
+            corrected = ImageOps.exif_transpose(img)
+            if corrected is img and img.size == corrected.size:
+                return face
+            temp = PROJECT_SECRETS_DIR / f"_face_rotated_{face.stem}.png"
+            temp.parent.mkdir(parents=True, exist_ok=True)
+            corrected.convert("RGB").save(temp, format="PNG")
+            return temp
+    except ImportError:
+        LOGGER.warning("Pillow not installed — skipping EXIF rotation for %s", face.name)
+        return face
+    except Exception:
+        LOGGER.debug("EXIF rotation skipped for %s", face.name, exc_info=True)
+        return face
+
+
+def _try_enable_image_mode(page: Page) -> bool:
+    for label in ("Create image", "Criar imagem", "Imagem", "Image"):
+        try:
+            btn = page.get_by_role("button", name=re.compile(label, re.I))
+            if btn.count() > 0:
+                btn.first.click(timeout=5000)
+                page.wait_for_timeout(1200)
+                return True
+        except Exception:
+            pass
+    try:
+        clicked = page.evaluate(_ENABLE_IMAGE_MODE_JS)
+        if clicked:
+            page.wait_for_timeout(1200)
+            LOGGER.info("Image mode via evaluate: %s", clicked)
+            return True
+    except Exception:
+        LOGGER.debug("evaluate image mode failed", exc_info=True)
+    LOGGER.warning("Could not enable image generation mode — continuing in default chat.")
+    return False
+
+
+def _try_set_aspect_ratio(page: Page, ratio: str = "16:9") -> bool:
+    for pattern in (ratio, "16:9", "Widescreen"):
+        try:
+            opt = page.get_by_text(re.compile(re.escape(pattern), re.I))
+            if opt.count() > 0:
+                opt.first.click(timeout=5000)
+                page.wait_for_timeout(800)
+                return True
+        except Exception:
+            pass
+    try:
+        clicked = page.evaluate(_SET_ASPECT_RATIO_JS, ratio)
+        if clicked:
+            page.wait_for_timeout(800)
+            if clicked == "aspect-menu":
+                page.evaluate(_SET_ASPECT_RATIO_JS, ratio)
+            LOGGER.info("Aspect ratio via evaluate: %s", clicked)
+            return True
+    except Exception:
+        LOGGER.debug("evaluate aspect ratio failed", exc_info=True)
+    LOGGER.warning("Could not set aspect ratio %s in UI — relying on prompt text.", ratio)
+    return False
 
 
 def _try_set_prompt(page: Page, prompt: str) -> bool:
@@ -864,7 +1074,7 @@ def _try_attach_face(page: Page, face_path: Path) -> bool:
     return False
 
 
-def _wait_for_image(page: Page, timeout_ms: int = 120_000) -> Optional[str]:
+def _wait_for_image(page: Page, timeout_ms: int = IMAGE_GEN_TIMEOUT_MS) -> Optional[str]:
     """Poll for a large generated image URL."""
     deadline = time.time() + timeout_ms / 1000.0
     last_src: Optional[str] = None
@@ -902,6 +1112,9 @@ def generate_thumbnail(
     prompt: str,
     output_path: Path,
     dry_run: bool = False,
+    image_mode: bool = True,
+    aspect_ratio: str = "16:9",
+    generation_timeout_ms: int = IMAGE_GEN_TIMEOUT_MS,
 ) -> bool:
     if dry_run:
         LOGGER.info(
@@ -917,27 +1130,79 @@ def generate_thumbnail(
         page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=90_000)
         page.wait_for_timeout(2500)
 
-        _try_attach_face(page, face_path)
+        if image_mode:
+            if not _try_enable_image_mode(page):
+                _save_failure_screenshot(page, "image_mode")
+            page.wait_for_timeout(1000)
+            if not _try_set_aspect_ratio(page, aspect_ratio):
+                _save_failure_screenshot(page, "aspect_ratio")
+
+        if not _try_attach_face(page, face_path):
+            _save_failure_screenshot(page, "attach_face")
+
         if not _try_set_prompt(page, prompt):
+            shot = _save_failure_screenshot(page, "prompt_input")
             raise RuntimeError(
                 "Could not find Gemini prompt input. UI may have changed — "
-                "re-run with --auth-only or inspect DOM manually."
+                f"re-run with --auth-cdp or inspect DOM manually. screenshot={shot}"
             )
         page.wait_for_timeout(500)
         if not _try_submit(page):
-            raise RuntimeError("Could not submit prompt (Send button not found).")
+            shot = _save_failure_screenshot(page, "submit")
+            raise RuntimeError(
+                f"Could not submit prompt (Send button not found). screenshot={shot}"
+            )
 
-        img_src = _wait_for_image(page, timeout_ms=180_000)
+        img_src = _wait_for_image(page, timeout_ms=generation_timeout_ms)
         if not img_src:
+            shot = _save_failure_screenshot(page, "generation_timeout")
             raise RuntimeError(
                 "Timed out waiting for generated image. "
-                "Try headed mode (--headless not set) or verify Gemini Pro image quota."
+                f"Try headed mode or verify Gemini Pro image quota. screenshot={shot}"
             )
 
         _download_image(page, img_src, output_path)
         _resize_to_target(output_path)
         LOGGER.info("Saved thumbnail: %s (headless=%s)", output_path, settings.headless)
         return True
+
+
+def run_test_web(
+    *,
+    faces_dir: Path,
+    output_path: Optional[Path] = None,
+    prompt: Optional[str] = None,
+    dry_run: bool = False,
+    headless: bool = False,
+    sniff_network: bool = False,
+) -> Path:
+    """Single headed browser test — no videos-dir, no API key."""
+    settings = GeminiWebSettings.from_args(headless=headless, sniff_network=sniff_network)
+    if not dry_run and not settings.storage_state.is_file():
+        raise RuntimeError(
+            "Gemini browser session missing. Run:\n"
+            "  python scripts/gemini-thumbnails.py --auth-cdp"
+        )
+
+    dest = output_path or resolve_test_output_path()
+    face = _pick_rotated_face(faces_dir)
+    text = prompt or TEST_WEB_PROMPT
+
+    started = time.time()
+    ok = generate_thumbnail(
+        settings=settings,
+        face_path=face,
+        prompt=text,
+        output_path=dest,
+        dry_run=dry_run,
+        image_mode=True,
+        aspect_ratio="16:9",
+    )
+    elapsed = time.time() - started
+    if not ok:
+        raise RuntimeError("Test generation failed.")
+    LOGGER.info("Test web completed in %.1fs -> %s", elapsed, dest)
+    return dest
 
 
 def run_generation(
@@ -1040,6 +1305,22 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Test storage_state in headed + headless (no generation)",
     )
+    p.add_argument(
+        "--test-web",
+        action="store_true",
+        help="Single browser test (no API key, no videos-dir): image mode 16:9 + TEST prompt",
+    )
+    p.add_argument(
+        "--prompt",
+        default=None,
+        help="Override prompt text (--test-web or with --output-file)",
+    )
+    p.add_argument(
+        "--output-file",
+        type=Path,
+        default=None,
+        help="Exact output PNG path (--test-web; default: ~/YOUTUBE/thumbnails_test/...)",
+    )
     p.add_argument("--faces-dir", type=Path, help="Folder with face selfie images")
     p.add_argument("--videos-dir", type=Path, help="Folder with MP4 videos")
     p.add_argument("--game", help=f'Game name (known: {", ".join(list_known_games())})')
@@ -1053,7 +1334,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "--sniff-network",
         action="store_true",
-        help="Log Gemini RPC URLs to ~/.secrets/gemini_network.log (no auth headers)",
+        help="Log Gemini RPC URLs to <repo>/.secrets/gemini_network.log (no auth headers)",
     )
     p.add_argument(
         "--use-system-chrome-profile",
@@ -1116,6 +1397,27 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "prefer headed batch runs or see docs/gemini/WEB_API_RESEARCH.md"
             )
         return 0 if status.get("headed_logged_in") else 1
+
+    if args.test_web:
+        if not args.faces_dir:
+            LOGGER.error("--test-web requires --faces-dir")
+            return 2
+        try:
+            started = time.time()
+            dest = run_test_web(
+                faces_dir=args.faces_dir.resolve(),
+                output_path=args.output_file.resolve() if args.output_file else None,
+                prompt=args.prompt,
+                dry_run=args.dry_run,
+                headless=args.headless,
+                sniff_network=args.sniff_network,
+            )
+            elapsed = time.time() - started
+            print(f"\nTest OK in {elapsed:.1f}s\nOutput: {dest}\n")
+        except Exception as exc:
+            LOGGER.error("%s", exc)
+            return 1
+        return 0
 
     if not args.faces_dir or not args.videos_dir or not args.game:
         LOGGER.error("--faces-dir, --videos-dir and --game are required for generation.")

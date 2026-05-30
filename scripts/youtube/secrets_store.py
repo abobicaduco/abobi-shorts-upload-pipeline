@@ -1,23 +1,32 @@
 # -*- coding: utf-8 -*-
-"""Safe read/write for ~/.secrets/api-keys.json (key names only in logs)."""
+"""Safe read/write for api-keys.json (home canonical, project fallback)."""
 from __future__ import annotations
 
 import json
 import logging
 import os
+import sys
 import tempfile
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.paths import resolve_api_keys_path
+
 LOGGER = logging.getLogger(__name__)
 
-API_KEYS_PATH = Path.home() / ".secrets" / "api-keys.json"
+API_KEYS_PATH = resolve_api_keys_path()
 YOUTUBE_OAUTH_KEY = "google_oauth_youtube"
 
 
 def load_api_keys() -> dict[str, Any]:
     """Load api-keys.json; return empty dict if missing or invalid."""
+    global API_KEYS_PATH
+    API_KEYS_PATH = resolve_api_keys_path()
     if not API_KEYS_PATH.is_file():
         return {}
     try:
@@ -36,6 +45,8 @@ def get_service_key(name: str) -> dict[str, Any] | None:
 
 def save_api_keys(data: dict[str, Any]) -> None:
     """Atomically write api-keys.json (preserves caller's full document)."""
+    global API_KEYS_PATH
+    API_KEYS_PATH = resolve_api_keys_path()
     API_KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".json",

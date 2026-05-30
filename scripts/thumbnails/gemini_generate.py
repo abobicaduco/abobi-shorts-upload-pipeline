@@ -15,6 +15,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+from shared.paths import resolve_api_keys_path
 from thumbnails.prompts import build_prompt, list_known_games
 
 LOGGER = logging.getLogger(__name__)
@@ -25,14 +26,13 @@ TARGET_SIZE = (1280, 720)
 DEFAULT_MODEL = "gemini-2.5-flash-image"
 FALLBACK_MODELS = ("gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3-pro-image")
 
-API_KEYS_PATH = Path.home() / ".secrets" / "api-keys.json"
-
 
 def _load_api_keys() -> dict[str, Any]:
-    if not API_KEYS_PATH.is_file():
+    api_keys_path = resolve_api_keys_path()
+    if not api_keys_path.is_file():
         return {}
     try:
-        data = json.loads(API_KEYS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(api_keys_path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
@@ -254,7 +254,7 @@ def run_generation(
     if not api_key and not dry_run:
         raise RuntimeError(
             "Gemini API key missing. Set GEMINI_API_KEY / GOOGLE_API_KEY or add "
-            "google.api_key to ~/.secrets/api-keys.json — see docs/THUMBNAILS.md"
+            "google.api_key to %USERPROFILE%\\.secrets\\api-keys.json — see docs/THUMBNAILS.md"
         )
     LOGGER.info("API key source: %s", source)
 

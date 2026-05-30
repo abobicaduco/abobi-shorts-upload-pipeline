@@ -1,71 +1,79 @@
-# ─── Environment & secrets ──────────────────────────────────
-.env
-.env.*
-!.env.example
-**/api-keys.json
-**/api-keys*.json
-*.pem
-*.key
-*.crt
-*.p12
-*.pfx
-*.sqlite
-*.db
-
-# ─── Logs ───────────────────────────────────────────────────
-logs/
-*.log
-*-log.txt
-publish-log.txt
-scripts/logs/
-
-# ─── OS / Editor ────────────────────────────────────────────
-.DS_Store
-Thumbs.db
-.vscode/*
-!.vscode/extensions.json
-.idea/
-*.bak
-
-# ─── Python ─────────────────────────────────────────────────
-scripts/__pycache__/
-scripts/youtube/__pycache__/
-scripts/tiktok/__pycache__/
-scripts/thumbnails/__pycache__/
-scripts/shared/__pycache__/
-*.pyc
-
-# ─── Google / OAuth / TikTok session (NEVER commit) ───────────
-scripts/google-credentials.json
-scripts/*.json
-scripts/.env
-scripts/youtube/.secrets/
-scripts/youtube/**/token.json
-scripts/youtube/**/client_secret*.json
-scripts/browser-profile/
-scripts/browser-profile-tiktok/
-scripts/browser-profile-*/
-**/storage_state*.json
-**/tiktok_storage_state.json
-**/gemini_storage_state.json
-**/gemini_network.log
-**/gemini_storage_state.json
-**/.secrets/
-scripts/browser-profile-gemini/
-
-# ─── Pipeline locks & local media ─────────────────────────────
-scripts/youtube/.pipeline.lock
-scripts/tiktok/.pipeline.lock
-**/pipeline.lock
-**/.pipeline.lock
-/clips/
-/inbox/
-**/tiktok_debug/
-
-# ─── Local-only docs (machine-specific paths) ─────────────────
-docs/LOCAL_USER_PATHS.md
-*.private.md
-docs/local/
-
-# ─── Cursor local ───────────────────────────────────────────
-.cursor/
+# ─── Environment & secrets ──────────────────────────────────
+.env
+.env.*
+!.env.example
+**/api-keys.json
+**/api-keys*.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.sqlite
+*.db
+
+# ─── Project-local runtime (never commit) ───────────────────
+.secrets/
+.local/
+gemini_storage_state.json
+browser-profile-gemini/
+browser-profile-tiktok/
+chrome-debug-gemini/
+upload_run.log
+
+# ─── Logs ───────────────────────────────────────────────────
+logs/
+*.log
+*-log.txt
+publish-log.txt
+scripts/logs/
+
+# ─── OS / Editor ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.bak
+
+# ─── Python ─────────────────────────────────────────────────
+__pycache__/
+scripts/__pycache__/
+scripts/youtube/__pycache__/
+scripts/tiktok/__pycache__/
+scripts/thumbnails/__pycache__/
+scripts/shared/__pycache__/
+*.pyc
+
+# ─── Google / OAuth / TikTok session (NEVER commit) ───────────
+scripts/google-credentials.json
+scripts/*.json
+scripts/.env
+scripts/youtube/.secrets/
+scripts/youtube/**/token.json
+scripts/youtube/**/client_secret*.json
+scripts/browser-profile/
+scripts/browser-profile-tiktok/
+scripts/browser-profile-*/
+**/storage_state*.json
+**/tiktok_storage_state.json
+**/gemini_storage_state.json
+**/gemini_network.log
+scripts/browser-profile-gemini/
+
+# ─── Pipeline locks & local media ─────────────────────────────
+scripts/youtube/.pipeline.lock
+scripts/tiktok/.pipeline.lock
+**/pipeline.lock
+**/.pipeline.lock
+/clips/
+/inbox/
+**/tiktok_debug/
+
+# ─── Local-only docs (machine-specific paths) ─────────────────
+docs/LOCAL_USER_PATHS.md
+*.private.md
+docs/local/
+
+# ─── Cursor local ───────────────────────────────────────────
+.cursor/

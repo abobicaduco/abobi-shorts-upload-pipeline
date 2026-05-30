@@ -9,12 +9,19 @@ Long-form (1/day, separate slot) is planned; not stored in schema yet.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
-DEFAULT_DB_PATH = Path.home() / ".secrets" / "youtube_schedule.db"
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.paths import project_secret_with_home_fallback
+
+DEFAULT_DB_PATH = project_secret_with_home_fallback("youtube_schedule.db")
 
 STATUSES_OCCUPYING = ("pending", "uploading", "scheduled", "uploaded")
 

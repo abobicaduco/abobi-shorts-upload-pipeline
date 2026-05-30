@@ -9,7 +9,7 @@ Steps:
     2. Attach a face photo, paste a thumbnail prompt, wait for image
     3. Return to terminal and press ENTER to save log and exit
 
-Output: ~/.secrets/gemini_network.log (URLs only — query tokens redacted, no headers)
+Output: <repo>/.secrets/gemini_network.log (URLs only — query tokens redacted, no headers)
 """
 from __future__ import annotations
 

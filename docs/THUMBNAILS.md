@@ -59,7 +59,7 @@ inbox/fortnite_mobile_20260530/
 - Channel verified for custom thumbnails (subscriber threshold).
 - Image ≤ 2 MB, JPG/PNG, recommended **1280×720**.
 
-**No credentials here** — OAuth token lives only under `%USERPROFILE%\.secrets\youtube_token.json` (gitignored).
+**No credentials here** — OAuth token lives under `<repo>/.secrets/youtube_token.json` or `%USERPROFILE%\.secrets\scripts\` (gitignored).
 
 ---
 
@@ -115,9 +115,10 @@ Quando o **email do Google fica girando para sempre** após digitar o endereço,
 **PowerShell** — abra o Chrome (feche outras janelas do mesmo perfil de debug antes):
 
 ```powershell
+$repo = "C:\Users\carlo\Projects\abobi-shorts-upload-pipeline"
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
   --remote-debugging-port=9222 `
-  --user-data-dir="$env:USERPROFILE\.secrets\chrome-debug-gemini"
+  --user-data-dir="$repo\.secrets\chrome-debug-gemini"
 ```
 
 No Chrome que abriu: vá em [gemini.google.com](https://gemini.google.com), faça login (senha e **2FA só no navegador** — nunca no terminal).
@@ -131,7 +132,7 @@ python scripts/gemini-thumbnails.py --auth-cdp
 
 1. O script imprime instruções e pede **ENTER** (Chrome com debug já aberto e logado).
 2. Conecta em `http://127.0.0.1:9222`, pede **ENTER** de novo para confirmar.
-3. Sessão salva em `%USERPROFILE%\.secrets\gemini_storage_state.json` (gitignored). O Chrome de debug pode ficar aberto.
+3. Sessão salva em `<repo>/.secrets/gemini_storage_state.json` (gitignored). O Chrome de debug pode ficar aberto.
 
 Porta ou host diferentes: `--auth-cdp-url http://127.0.0.1:9223`
 
@@ -141,7 +142,7 @@ Porta ou host diferentes: `--auth-cdp-url http://127.0.0.1:9223`
 python scripts/gemini-thumbnails.py --auth-only
 ```
 
-1. Chrome instalado abre `gemini.google.com` (perfil `%USERPROFILE%\.secrets\browser-profile-gemini\`)
+1. Chrome instalado abre `gemini.google.com` (perfil `<repo>/.secrets/browser-profile-gemini/`)
 2. Login manual + 2FA no celular se pedido
 3. **ENTER** no terminal → `gemini_storage_state.json`
 
@@ -162,11 +163,11 @@ Usa `%LOCALAPPDATA%\Google\Chrome\User Data` — risco de corrupção se o Chrom
 
 1. Faça login no **Chrome normal** em gemini.google.com.
 2. Exporte cookies (extensão tipo “Get cookies.txt” / “Cookie-Editor”) **ou** use `playwright codegen` apontando para o perfil — só para copiar estado; não commite o arquivo.
-3. Converta/importe para o formato `storage_state` do Playwright e salve em `%USERPROFILE%\.secrets\gemini_storage_state.json`, **ou** use `--auth-cdp` depois de logado no Chrome de debug (mais simples).
+3. Converta/importe para o formato `storage_state` do Playwright e salve em `<repo>/.secrets/gemini_storage_state.json`, **ou** use `--auth-cdp` depois de logado no Chrome de debug (mais simples).
 
-**Segurança:** nunca cole senha no terminal; não commite `gemini_storage_state.json` nem perfis em `.secrets/`.
+**Segurança:** nunca cole senha no terminal; não commite `gemini_storage_state.json` nem perfis em `<repo>/.secrets/`.
 
-**Erros de perfil (*Target.createTarget*):** feche o Chrome do script, apague `Singleton*` em `%USERPROFILE%\.secrets\browser-profile-gemini\` (só com Chrome fechado), tente de novo ou use `--auth-cdp`.
+**Erros de perfil (*Target.createTarget*):** feche o Chrome do script, apague `Singleton*` em `<repo>/.secrets/browser-profile-gemini/` (só com Chrome fechado), tente de novo ou use `--auth-cdp`.
 
 ### Verify headed vs headless
 
@@ -192,7 +193,7 @@ python scripts/gemini-thumbnails.py `
 | `--auth-only` | Login com perfil isolado Playwright |
 | `--slow-mo MS` | Atraso Playwright em ms (`--auth-only` only) |
 | `--headless` | No visible window (test with `--verify-session` first) |
-| `--sniff-network` | Log RPC URLs to `~/.secrets/gemini_network.log` (no auth headers) |
+| `--sniff-network` | Log RPC URLs to `<repo>/.secrets/gemini_network.log` (no auth headers) |
 | `--use-system-chrome-profile` | Use real Chrome profile (OFF default — close all Chrome; risky) |
 | `--disable-blink-automation` | Extra Chrome flag only if `--auth-only` still fails |
 | `--dry-run` | Plan paths/prompts only |
@@ -215,9 +216,9 @@ Documented patterns (batchexecute RPC, no secrets): [gemini/WEB_API_RESEARCH.md]
 - **Auth:** prefer `--auth-cdp` (attach to real Chrome); `--auth-only` uses `channel="chrome"` only (no bundled Chromium), viewport **1920×1080**, **no** extra `args` unless `--disable-blink-automation`
 - **Removed** (trigger Google bot detection): `--no-sandbox`, `--disable-dev-shm-usage`, `--disable-web-security`, `wmic` kill of user Chrome
 - `ignore_default_args=["--enable-automation"]` on auth/batch launch
-- CDP debug profile: `%USERPROFILE%\.secrets\chrome-debug-gemini\`
+- CDP debug profile: `<repo>/.secrets/chrome-debug-gemini/`
 - Batch: headed default; `--headless` optional (often blocked — use `--verify-session`)
-- Isolated profile: `%USERPROFILE%\.secrets\browser-profile-gemini\` (gitignored)
+- Isolated profile: `<repo>/.secrets/browser-profile-gemini/` (gitignored)
 - `page.evaluate` fallbacks when Gemini UI selectors change (selectors are best-effort / TODO when UI shifts)
 
 **Session isolation:** Cursor, Claude, and other agents **do not** inherit `gemini_storage_state.json` — only this local Python CLI uses it.
@@ -332,7 +333,7 @@ flowchart LR
 ### API key storage
 
 - **Canonical reference doc:** `AI_CREDENTIALS.md` (user home — lists *where* keys live, not values).
-- **Local JSON:** `%USERPROFILE%\.secrets\api-keys.json` — e.g. `google.api_key`.
+- **Local JSON:** `%USERPROFILE%\.secrets\api-keys.json` (preferred) or `<repo>/.secrets/api-keys.json` — e.g. `google.api_key`.
 - **Env override:** `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 
 Agents: **never** read or paste `api-keys.json` / `youtube_token.json` into chat or commits.
@@ -369,12 +370,11 @@ Entregue 4 variações com hooks diferentes: {hook}
 | Never commit | Notes |
 |--------------|--------|
 | `youtube_token.json`, `youtube_client_secret.json` | OAuth |
-| `gemini_storage_state.json`, `gemini_network.log`, `browser-profile-gemini/`, `chrome-debug-gemini/` | Gemini web session / capture / CDP profile |
-| `api-keys.json` | Gemini / other APIs |
-| `*.db` | Schedule state |
-| Full-size thumbnail exports with personal email/watermarks | Optional `.gitignore` under inbox if syncing folder |
+| `gemini_storage_state.json`, `gemini_network.log`, `browser-profile-gemini/`, `chrome-debug-gemini/` | Gemini web — under `<repo>/.secrets/` |
+| `api-keys.json` | Gemini / other APIs — prefer `%USERPROFILE%\.secrets\` |
+| `*.db` | Schedule state — under `<repo>/.secrets/` |
 
-Use `%USERPROFILE%` and `~/.secrets/` in docs — not machine-specific drive letters except as examples in LOCAL_SETUP.
+Use `<repo>/.secrets/` for session/DB files; `%USERPROFILE%` for media and api-keys canonical path.
 
 ---
 
