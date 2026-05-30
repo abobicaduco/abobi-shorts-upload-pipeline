@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""CLI entry: generate YouTube thumbnails with Gemini (see docs/THUMBNAILS.md)."""
+"""CLI entry: generate YouTube thumbnails with Gemini (see docs/THUMBNAILS.md).
+
+Default --faces-dir: FACES_DIR env, .secrets/thumbnail_faces/, or %USERPROFILE%/Pictures/EU
+(thumbnail selfies only — scripts/shared/paths.py).
+"""
 from __future__ import annotations
 
 import sys

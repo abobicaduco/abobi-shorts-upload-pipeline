@@ -5,7 +5,7 @@
 
 Related: [content/FORTNITE_MOBILE.md](content/FORTNITE_MOBILE.md) · [youtube/HANDOFF.md](youtube/HANDOFF.md) · [PLATFORMS.md](PLATFORMS.md)
 
-**Local face photos:** default folder `%USERPROFILE%\Pictures\EU` (one selfie per video). Machine-specific paths and full examples → **`docs/LOCAL_USER_PATHS.md`** (local only, gitignored — create from this doc on each PC).
+**Face references (`faces_dir`):** use a **dedicated** folder of thumbnail selfies (jpg/png) — not a general photo library. Default on Windows: `%USERPROFILE%\Pictures\EU`; override with `--faces-dir`, `FACES_DIR`, or `<repo>/.secrets/thumbnail_faces/`. Machine-specific paths and examples → **`docs/LOCAL_USER_PATHS.md`** (local only, gitignored).
 
 ---
 
@@ -177,6 +177,21 @@ python scripts/gemini-thumbnails.py --verify-session
 
 If `headless_logged_in: False` but headed works, run batch **without** `--headless`.
 
+### One Gemini run at a time (required)
+
+**Do not** run `gemini-thumbnails.py` from more than one terminal, Cursor agent, or scheduled task at once. Each extra run spawns another Chrome/Playwright window and can exhaust Gemini quota or hang on profile locks.
+
+- Before starting: close other terminals running thumbnail scripts; kill stray Chrome windows using `<repo>/.secrets/browser-profile-gemini` or `chrome-debug-gemini` if needed.
+- The CLI holds an exclusive lock at `<repo>/.secrets/gemini_thumbnails.lock` (PID file). A second run exits with an error naming the active PID.
+- **Use a single command** in **one** PowerShell or Git Bash window:
+
+```powershell
+cd C:\Users\carlo\Projects\abobi-shorts-upload-pipeline
+python scripts/gemini-thumbnails.py --count 1 --keep-browser-open -v
+```
+
+(`--faces-dir` defaults to `%USERPROFILE%\Pictures\EU` when unset.) For batch inbox runs, add `--videos-dir` and `--game` as below.
+
 ### Batch generation
 
 ```powershell
@@ -280,6 +295,7 @@ Also supported (first match wins): env `GEMINI_API_KEY` / `GOOGLE_API_KEY`, keys
 | `403 API_KEY_SERVICE_BLOCKED` | Chave/projeto GCP (ex.: `190666412179` / `warm-alliance-457415-d2`) **bloqueado** para `generativelanguage` — comum quando a chave veio do Console do projeto YouTube/AdSense | **Nova chave** em [AI Studio](https://aistudio.google.com/api-keys) → **projeto novo** (não reimportar o projeto OAuth). Ver [GEMINI_API_VS_PRO.md](GEMINI_API_VS_PRO.md) |
 | `403 PERMISSION_DENIED` (billing) | Modelos de **imagem** não existem no free tier da API | AI Studio → **Set up billing** no projeto da chave (paid tier). Créditos Cloud do Pro (~US$10/mês) podem cobrir uso pequeno |
 | `429 RESOURCE_EXHAUSTED` | Rate limit free tier | Backoff; ou billing para tier pago |
+| `No jpg/png face images` / `Faces directory not found` | Missing or empty dedicated `faces_dir` | Add thumbnail selfies (jpg/png) to default EU folder or set `FACES_DIR` / `--faces-dir` |
 | `Need N distinct face photos` | Not enough selfies in `--faces-dir` | Add more images or lower `--count` |
 
 **Reteste 2026-05-30:** chave em `google.api_key` → 403 em `ListModels`, `generateContent` texto e `gemini-2.5-flash-image`; `consumer: projects/190666412179`.
@@ -297,7 +313,7 @@ python scripts/generate_thumbnails.py `
 
 | Flag | Purpose |
 |------|---------|
-| `--faces-dir` | Folder of face selfies (jpg/png) — default `%USERPROFILE%\Pictures\EU`; see `LOCAL_USER_PATHS.md` (local, gitignored). **One distinct face per video, no reuse in one run.** |
+| `--faces-dir` | **Dedicated** thumbnail selfie folder (jpg/png only). Optional: defaults via `FACES_DIR`, `.secrets/thumbnail_faces/`, then `%USERPROFILE%\Pictures\EU`. Fails clearly if empty or no images. **One distinct face per video, no reuse in one run.** See `LOCAL_USER_PATHS.md` (gitignored). |
 | `--videos-dir` | Folder of MP4s; output goes to `videos-dir/thumbnails/{stem}_thumb.png` |
 | `--game` | Prompt theme set (`Fortnite Mobile`, `Granny 2`, … — see `scripts/thumbnails/prompts.py`) |
 | `--count N` | Override auto-count of `.mp4` files |

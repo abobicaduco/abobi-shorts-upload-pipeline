@@ -15,7 +15,12 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from shared.paths import resolve_api_keys_path
+from shared.paths import (
+    DEFAULT_FACES_DIR,
+    resolve_api_keys_path,
+    resolve_faces_dir,
+    validate_faces_dir,
+)
 from thumbnails.prompts import build_prompt, list_known_games
 
 LOGGER = logging.getLogger(__name__)
@@ -239,6 +244,7 @@ def run_generation(
     model: str = DEFAULT_MODEL,
     skip_existing: bool = True,
 ) -> list[Path]:
+    validate_faces_dir(faces_dir)
     faces = _iter_media(faces_dir, IMAGE_EXTENSIONS)
     videos = _iter_media(videos_dir, VIDEO_EXTENSIONS)
     n = count if count is not None else len(videos)
@@ -292,12 +298,23 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         epilog=(
             "Example:\n"
             '  python scripts/generate_thumbnails.py \\\n'
-            '    --faces-dir "%USERPROFILE%\\Pictures\\faces" \\\n'
+            f'    --faces-dir "%USERPROFILE%\\Pictures\\EU" \\\n'
             '    --videos-dir "%USERPROFILE%\\YOUTUBE\\inbox\\fortnite_mobile_20260530" \\\n'
             '    --game "Fortnite Mobile"\n'
+            "\n"
+            f"Default --faces-dir: FACES_DIR env, then .secrets/thumbnail_faces/, "
+            f"then {DEFAULT_FACES_DIR} (thumbnail selfies only).\n"
         ),
     )
-    p.add_argument("--faces-dir", type=Path, required=True, help="Folder with face selfie images")
+    p.add_argument(
+        "--faces-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Thumbnail face reference folder (jpg/png selfies only). "
+            f"Default: FACES_DIR env, .secrets/thumbnail_faces/, or {DEFAULT_FACES_DIR}"
+        ),
+    )
     p.add_argument("--videos-dir", type=Path, required=True, help="Folder with MP4 videos")
     p.add_argument("--game", required=True, help=f'Game name (known: {", ".join(list_known_games())})')
     p.add_argument(
@@ -328,8 +345,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     try:
+        faces_dir = resolve_faces_dir(args.faces_dir)
         paths = run_generation(
-            faces_dir=args.faces_dir.resolve(),
+            faces_dir=faces_dir,
             videos_dir=args.videos_dir.resolve(),
             game=args.game,
             count=args.count,

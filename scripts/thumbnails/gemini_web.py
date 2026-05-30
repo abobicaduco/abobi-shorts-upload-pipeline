@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+import traceback
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,13 +34,18 @@ from thumbnails.gemini_generate import (
     assign_faces,
 )
 from shared.paths import (
+    DEFAULT_FACES_DIR,
+    FACE_IMAGE_EXTENSIONS,
     PROJECT_LOGS_DIR,
     PROJECT_SECRETS_DIR,
     project_secret,
     project_secret_dir_with_fallbacks,
     project_secret_with_home_fallback,
+    resolve_faces_dir,
+    validate_faces_dir,
 )
 from thumbnails.prompts import build_prompt, list_known_games
+from shared.pipeline_lock import pipeline_lock
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,7 +58,22 @@ _PW_WINDOW_WIDTH = 1920
 _PW_WINDOW_HEIGHT = 1080
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+FACE_ATTACH_EXTENSIONS = set(FACE_IMAGE_EXTENSIONS)
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+
+_LAST_ATTACH_METHOD: Optional[str] = None
+
+_ATTACH_BUTTON_LABELS = (
+    "Enviar imagem",
+    "Upload",
+    "Adicionar imagem",
+    "Anexar",
+    "Attach",
+    "Add",
+    "Inserir imagem",
+    "Imagem",
+    "Arquivo",
+)
 
 TRACKED_RESOURCE_TYPES = frozenset({"fetch", "xhr", "websocket"})
 GEMINI_RPC_HOST_FRAGMENTS = (
@@ -106,12 +127,13 @@ def resolve_test_output_path() -> Path:
 
 
 TEST_WEB_PROMPT = (
-    "Fortnite Mobile YouTube thumbnail PT-BR, estilo Alanzoka, rosto com brilho neon, "
-    'texto grande "TESTE THUMB", composicao 16:9, alto contraste, cores saturadas. '
+    "Use a foto anexada como rosto do criador (mantenha traços reconhecíveis). "
+    "Fortnite Mobile YouTube thumbnail PT-BR, estilo Alanzoka cutout 16:9, rosto com brilho neon, "
+    'texto grande "TESTE THUMB", alto contraste, cores saturadas. '
     "Entregue apenas a imagem final."
 )
 
-IMAGE_GEN_TIMEOUT_MS = 600_000
+IMAGE_GEN_TIMEOUT_MS = 300_000
 
 
 def resolve_browser_profile(*, use_system_chrome_profile: bool = False) -> Path:
@@ -335,6 +357,7 @@ class GeminiWebSettings:
     disable_blink_automation: bool = False
     slow_mo: int = 0
     auth_cdp_url: str = CDP_DEFAULT_URL
+    keep_browser_open: bool = False
 
     @classmethod
     def from_args(
@@ -346,6 +369,7 @@ class GeminiWebSettings:
         disable_blink_automation: bool = False,
         slow_mo: int = 0,
         auth_cdp_url: str = CDP_DEFAULT_URL,
+        keep_browser_open: bool = False,
     ) -> GeminiWebSettings:
         return cls(
             storage_state=resolve_storage_state_path(),
@@ -358,6 +382,7 @@ class GeminiWebSettings:
             disable_blink_automation=disable_blink_automation,
             slow_mo=slow_mo,
             auth_cdp_url=auth_cdp_url,
+            keep_browser_open=keep_browser_open,
         )
 
 
@@ -478,11 +503,13 @@ def _persistent_auth_context_kwargs(
 
 
 def _ephemeral_browser_launch_kwargs(settings: GeminiWebSettings) -> dict[str, Any]:
+    # Headed runs stay visible — --start-minimized made the window look like instant open/close.
+    start_minimized = settings.headless and not settings.keep_browser_open
     return {
         "headless": settings.headless,
         "channel": "chrome",
         "args": _minimal_chrome_args(
-            start_minimized=not settings.headless,
+            start_minimized=start_minimized,
             disable_blink_automation=settings.disable_blink_automation,
             headless=settings.headless,
         ),
@@ -836,6 +863,23 @@ def run_auth_only(settings: Optional[GeminiWebSettings] = None) -> bool:
                     context.close()
 
 
+def _wait_before_browser_close(settings: GeminiWebSettings, *, had_error: bool) -> None:
+    """Pause before closing so headed runs (especially failures) stay inspectable."""
+    if settings.headless:
+        return
+    if not had_error and not settings.keep_browser_open:
+        return
+    label = "erro" if had_error else "keep-browser-open"
+    print(
+        f"\n[{label}] Navegador ainda aberto. Inspecione gemini.google.com se necessario.\n"
+        "Pressione ENTER para fechar o Chrome..."
+    )
+    try:
+        input()
+    except EOFError:
+        LOGGER.debug("Non-interactive shell — closing browser without ENTER.")
+
+
 @contextmanager
 def gemini_browser(settings: GeminiWebSettings) -> Iterator[tuple[BrowserContext, Page]]:
     """Launch Chrome with storage_state hydration."""
@@ -843,11 +887,17 @@ def gemini_browser(settings: GeminiWebSettings) -> Iterator[tuple[BrowserContext
         raise RuntimeError("gemini_browser() cannot run during --auth-only.")
 
     require_playwright()
+    _require_storage_state(settings)
     settings.browser_profile.mkdir(parents=True, exist_ok=True)
     _clear_profile_singleton_locks(settings.browser_profile)
 
     assert sync_playwright is not None
     kwargs = _ephemeral_browser_launch_kwargs(settings)
+    LOGGER.info(
+        "Launching Chrome (headed=%s, storage_state=%s)",
+        not settings.headless,
+        settings.storage_state,
+    )
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(**kwargs)
@@ -855,6 +905,7 @@ def gemini_browser(settings: GeminiWebSettings) -> Iterator[tuple[BrowserContext
         page = context.new_page()
         page.set_default_timeout(300_000)
         flush_network: Callable[[], None] = lambda: None
+        session_error: Optional[BaseException] = None
 
         if settings.sniff_network:
             _, flush_network = attach_network_logger(
@@ -865,15 +916,27 @@ def gemini_browser(settings: GeminiWebSettings) -> Iterator[tuple[BrowserContext
 
         try:
             yield context, page
+        except BaseException as exc:
+            session_error = exc
+            _write_exception_log("gemini_browser", exc)
+            LOGGER.exception("Gemini browser session failed before completion.")
+            raise
         finally:
             flush_network()
+            _wait_before_browser_close(settings, had_error=session_error is not None)
             try:
                 if not settings.headless and settings.storage_state.parent.exists():
                     context.storage_state(path=str(settings.storage_state))
             except Exception:
-                LOGGER.debug("Could not refresh storage_state on close.")
-            context.close()
-            browser.close()
+                LOGGER.exception("Could not refresh storage_state on close.")
+            with suppress(Exception):
+                context.close()
+            with suppress(Exception):
+                browser.close()
+            if session_error is not None:
+                LOGGER.error(
+                    "Browser closed after failure. Re-run with --keep-browser-open to inspect."
+                )
 
 
 def verify_session(settings: GeminiWebSettings) -> dict[str, Any]:
@@ -910,6 +973,38 @@ def verify_session(settings: GeminiWebSettings) -> dict[str, Any]:
     return result
 
 
+def _write_exception_log(label: str, exc: BaseException) -> Path:
+    """Persist traceback under .local/logs/gemini_web/ (gitignored)."""
+    log_dir = PROJECT_LOGS_DIR / "gemini_web"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_label = re.sub(r"[^\w\-]+", "_", label)[:48]
+    path = log_dir / f"error_{safe_label}_{ts}.log"
+    body = (
+        f"label={label}\n"
+        f"time={datetime.now().isoformat(timespec='seconds')}\n"
+        f"type={type(exc).__name__}\n"
+        f"message={exc}\n\n"
+        f"{traceback.format_exc()}"
+    )
+    path.write_text(body, encoding="utf-8")
+    LOGGER.error("Exception log: %s", path)
+    return path
+
+
+def _require_storage_state(settings: GeminiWebSettings) -> None:
+    """Fail before launching Chrome when Playwright session file is missing."""
+    path = settings.storage_state
+    if path.is_file():
+        return
+    raise RuntimeError(
+        "Gemini session missing. Run first:\n"
+        "  python scripts/gemini-thumbnails.py --auth-cdp\n"
+        f"Expected storage_state: {path}\n"
+        f"Also checked: {Path.home() / '.secrets' / path.name}"
+    )
+
+
 def _save_failure_screenshot(page: Page, step: str) -> Optional[Path]:
     """Save debug screenshot under .local/logs (gitignored)."""
     try:
@@ -926,27 +1021,24 @@ def _save_failure_screenshot(page: Page, step: str) -> Optional[Path]:
         return None
 
 
-def _pick_rotated_face(faces_dir: Path) -> Path:
-    """Round-robin through jpg/png in faces_dir; EXIF-transpose to temp if needed."""
-    extensions = {".jpg", ".jpeg", ".png"}
-    faces = _iter_media(faces_dir, extensions)
-    state_path = resolve_face_rotation_state_path()
-    index = 0
-    if state_path.is_file():
-        with suppress(ValueError, OSError):
-            index = int(state_path.read_text(encoding="utf-8").strip()) % len(faces)
-    face = faces[index]
-    next_index = (index + 1) % len(faces)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(str(next_index), encoding="utf-8")
-    LOGGER.info("Face rotation: %s (%s/%s)", face.name, index + 1, len(faces))
+def get_last_attach_method() -> Optional[str]:
+    """Selector/strategy that attached the face on the last run (for debugging)."""
+    return _LAST_ATTACH_METHOD
 
+
+def _iter_face_images(faces_dir: Path) -> list[Path]:
+    """jpg/png only — browser upload cannot use HEIC/webp reliably."""
+    return _iter_media(faces_dir, FACE_ATTACH_EXTENSIONS)
+
+
+def _prepare_face_for_upload(face: Path) -> Path:
+    """EXIF-transpose face photo when Pillow is available."""
     try:
         from PIL import Image, ImageOps
 
         with Image.open(face) as img:
             corrected = ImageOps.exif_transpose(img)
-            if corrected is img and img.size == corrected.size:
+            if corrected is img:
                 return face
             temp = PROJECT_SECRETS_DIR / f"_face_rotated_{face.stem}.png"
             temp.parent.mkdir(parents=True, exist_ok=True)
@@ -960,8 +1052,94 @@ def _pick_rotated_face(faces_dir: Path) -> Path:
         return face
 
 
+def _assign_faces_rotated(faces_dir: Path, count: int) -> list[Path]:
+    """assign_faces with round-robin offset persisted across batch runs."""
+    faces = _iter_face_images(faces_dir)
+    state_path = resolve_face_rotation_state_path()
+    start = 0
+    if state_path.is_file():
+        with suppress(ValueError, OSError):
+            start = int(state_path.read_text(encoding="utf-8").strip()) % len(faces)
+    rotated = faces[start:] + faces[:start]
+    selected = assign_faces(rotated, count)
+    next_index = (start + count) % len(faces)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(str(next_index), encoding="utf-8")
+    LOGGER.info(
+        "Face rotation batch: start=%s count=%s next=%s files=%s",
+        start,
+        count,
+        next_index,
+        [f.name for f in selected],
+    )
+    return [_prepare_face_for_upload(f) for f in selected]
+
+
+def _prompt_with_face_reference(prompt: str) -> str:
+    """Ensure prompt tells Gemini to use the attached selfie."""
+    if "foto anexad" in prompt.lower() or "attached photo" in prompt.lower():
+        return prompt
+    prefix = (
+        "Use a foto anexada como rosto do criador do canal (identidade reconhecível, "
+        "estilo cutout Alanzoka, composição 16:9). "
+    )
+    return prefix + prompt
+
+
+def _dismiss_blocking_modals(page: Page, rounds: int = 4) -> None:
+    """Close onboarding dialogs that block the prompt or upload controls."""
+    for _ in range(rounds):
+        dismissed = False
+        for label in ("Agora não", "Not now", "Fechar", "Close", "Continuar", "Continue", "OK"):
+            try:
+                btn = page.get_by_role("button", name=re.compile(label, re.I))
+                if btn.count() > 0:
+                    btn.first.click(timeout=2000)
+                    page.wait_for_timeout(600)
+                    dismissed = True
+                    break
+            except Exception:
+                pass
+        if not dismissed:
+            try:
+                if page.evaluate(_DISMISS_MODALS_JS):
+                    page.wait_for_timeout(600)
+                    dismissed = True
+            except Exception:
+                pass
+        if not dismissed:
+            with suppress(Exception):
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(400)
+            break
+        page.wait_for_timeout(400)
+
+
+def _pick_rotated_face(faces_dir: Path) -> Path:
+    """Round-robin through jpg/png in faces_dir; EXIF-transpose to temp if needed."""
+    faces = _iter_face_images(faces_dir)
+    state_path = resolve_face_rotation_state_path()
+    index = 0
+    if state_path.is_file():
+        with suppress(ValueError, OSError):
+            index = int(state_path.read_text(encoding="utf-8").strip()) % len(faces)
+    face = faces[index]
+    next_index = (index + 1) % len(faces)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(str(next_index), encoding="utf-8")
+    LOGGER.info("Face rotation: %s (%s/%s)", face.name, index + 1, len(faces))
+    return _prepare_face_for_upload(face)
+
+
 def _try_enable_image_mode(page: Page) -> bool:
-    for label in ("Create image", "Criar imagem", "Imagem", "Image"):
+    for label in (
+        "Create image",
+        "Criar imagem",
+        "Gerar imagem",
+        "Imagen",
+        "Imagem",
+        "Image",
+    ):
         try:
             btn = page.get_by_role("button", name=re.compile(label, re.I))
             if btn.count() > 0:
@@ -974,6 +1152,9 @@ def _try_enable_image_mode(page: Page) -> bool:
         clicked = page.evaluate(_ENABLE_IMAGE_MODE_JS)
         if clicked:
             page.wait_for_timeout(1200)
+            if clicked == "tools-menu":
+                page.wait_for_timeout(800)
+                page.evaluate(_ENABLE_IMAGE_MODE_JS)
             LOGGER.info("Image mode via evaluate: %s", clicked)
             return True
     except Exception:
@@ -983,11 +1164,22 @@ def _try_enable_image_mode(page: Page) -> bool:
 
 
 def _try_set_aspect_ratio(page: Page, ratio: str = "16:9") -> bool:
-    for pattern in (ratio, "16:9", "Widescreen"):
+    for pattern in (ratio, "16:9", "Widescreen", "Proporção", "Aspect ratio"):
         try:
             opt = page.get_by_text(re.compile(re.escape(pattern), re.I))
             if opt.count() > 0:
                 opt.first.click(timeout=5000)
+                page.wait_for_timeout(800)
+                return True
+        except Exception:
+            pass
+    for label in ("Proporção", "Aspect ratio", "Formato"):
+        try:
+            btn = page.get_by_role("button", name=re.compile(label, re.I))
+            if btn.count() > 0:
+                btn.first.click(timeout=5000)
+                page.wait_for_timeout(800)
+                page.get_by_text(re.compile(r"16:9", re.I)).first.click(timeout=5000)
                 page.wait_for_timeout(800)
                 return True
         except Exception:
@@ -1048,28 +1240,70 @@ def _try_submit(page: Page) -> bool:
 
 
 def _try_attach_face(page: Page, face_path: Path) -> bool:
-    """Attach reference face via file input (locator or evaluate discovery)."""
-    try:
-        file_input = page.locator('input[type="file"]').first
-        if file_input.count() > 0:
-            file_input.set_input_files(str(face_path.resolve()))
+    """Attach reference face via file input (menu buttons, then hidden input)."""
+    global _LAST_ATTACH_METHOD
+    abs_path = str(face_path.resolve())
+
+    def _set_files() -> bool:
+        try:
+            inputs = page.locator('input[type="file"]')
+            if inputs.count() == 0:
+                return False
+            inputs.first.set_input_files(abs_path, timeout=10_000)
             page.wait_for_timeout(1500)
             return True
-    except Exception:
-        LOGGER.debug("Locator file input failed", exc_info=True)
+        except Exception:
+            LOGGER.debug("set_input_files failed", exc_info=True)
+            return False
+
+    if _set_files():
+        _LAST_ATTACH_METHOD = "file-input-direct"
+        return True
+
+    for label in _ATTACH_BUTTON_LABELS:
+        try:
+            btn = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
+            if btn.count() > 0:
+                btn.first.click(timeout=5000)
+                page.wait_for_timeout(900)
+                if _set_files():
+                    _LAST_ATTACH_METHOD = f"button:{label}"
+                    return True
+        except Exception:
+            LOGGER.debug("Attach button %s failed", label, exc_info=True)
+
+    for label in _ATTACH_BUTTON_LABELS:
+        try:
+            link = page.get_by_text(re.compile(re.escape(label), re.I))
+            if link.count() > 0:
+                link.first.click(timeout=5000)
+                page.wait_for_timeout(900)
+                if _set_files():
+                    _LAST_ATTACH_METHOD = f"text:{label}"
+                    return True
+        except Exception:
+            pass
+
+    with suppress(Exception):
+        page.keyboard.press("Control+U")
+        page.wait_for_timeout(600)
+        if _set_files():
+            _LAST_ATTACH_METHOD = "keyboard-ctrl-u"
+            return True
 
     try:
-        has_input = page.evaluate(_FIND_FILE_INPUT_JS)
-        if has_input:
-            page.locator('input[type="file"]').first.set_input_files(str(face_path.resolve()))
+        if page.evaluate(_FIND_FILE_INPUT_JS):
+            page.locator('input[type="file"]').first.set_input_files(abs_path, timeout=10_000)
             page.wait_for_timeout(1500)
+            _LAST_ATTACH_METHOD = "evaluate-file-input"
             return True
     except Exception:
         LOGGER.debug("evaluate file input fallback failed", exc_info=True)
 
+    _LAST_ATTACH_METHOD = None
     LOGGER.warning(
         "Could not attach face image — continuing with prompt only. "
-        "TODO: map Gemini upload button selectors when UI changes."
+        "Inspect fail_attach_face screenshot in .local/logs/gemini_web/."
     )
     return False
 
@@ -1100,9 +1334,128 @@ def _download_image(page: Page, src: str, output_path: Path) -> None:
         return
 
     response = page.request.get(src)
-    if not response.ok:
-        raise RuntimeError(f"Failed to download image: HTTP {response.status}")
-    output_path.write_bytes(response.body())
+    if response.ok:
+        output_path.write_bytes(response.body())
+        return
+
+    LOGGER.warning(
+        "Direct download failed (HTTP %s) — trying element screenshot fallback.",
+        response.status,
+    )
+    try:
+        img = page.locator(f'img[src="{src}"]').first
+        if img.count() > 0:
+            img.screenshot(path=str(output_path))
+            LOGGER.info("Saved thumbnail via img.screenshot fallback.")
+            return
+    except Exception:
+        LOGGER.debug("img.screenshot fallback failed", exc_info=True)
+
+    try:
+        b64 = page.evaluate(
+            """async (url) => {
+              const res = await fetch(url, { credentials: 'include' });
+              if (!res.ok) return null;
+              const blob = await res.blob();
+              return new Promise((resolve) => {
+                const r = new FileReader();
+                r.onload = () => resolve(String(r.result).split(',')[1] || null);
+                r.readAsDataURL(blob);
+              });
+            }""",
+            src,
+        )
+        if b64:
+            import base64
+
+            output_path.write_bytes(base64.b64decode(b64))
+            LOGGER.info("Saved thumbnail via in-page fetch fallback.")
+            return
+    except Exception:
+        LOGGER.debug("in-page fetch fallback failed", exc_info=True)
+
+    raise RuntimeError(f"Failed to download image: HTTP {response.status}")
+
+
+def _generate_thumbnail_on_page(
+    *,
+    settings: GeminiWebSettings,
+    context: BrowserContext,
+    page: Page,
+    face_path: Path,
+    prompt: str,
+    output_path: Path,
+    dry_run: bool = False,
+    image_mode: bool = True,
+    aspect_ratio: str = "16:9",
+    generation_timeout_ms: int = IMAGE_GEN_TIMEOUT_MS,
+    navigate: bool = True,
+) -> bool:
+    """Run one thumbnail generation on an existing Playwright page."""
+    if dry_run:
+        LOGGER.info(
+            "[DRY-RUN] Would generate %s | face=%s | headless=%s",
+            output_path.name,
+            face_path.name,
+            settings.headless,
+        )
+        return True
+
+    if navigate:
+        LOGGER.info("Navigating to Gemini app...")
+        page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=120_000)
+        page.wait_for_timeout(2500)
+        _dismiss_blocking_modals(page)
+        ensure_session(settings, page, context)
+        _dismiss_blocking_modals(page)
+
+    if image_mode:
+        if not _try_enable_image_mode(page):
+            _save_failure_screenshot(page, "image_mode")
+        page.wait_for_timeout(1000)
+
+    if not _try_attach_face(page, face_path):
+        shot = _save_failure_screenshot(page, "attach_face")
+        LOGGER.warning(
+            "Face attach failed (%s) — continuing with prompt-only. screenshot=%s",
+            face_path.name,
+            shot,
+        )
+    page.wait_for_timeout(1500)
+
+    if image_mode and not _try_set_aspect_ratio(page, aspect_ratio):
+        _save_failure_screenshot(page, "aspect_ratio")
+
+    full_prompt = _prompt_with_face_reference(prompt)
+    if not _try_set_prompt(page, full_prompt):
+        shot = _save_failure_screenshot(page, "prompt_input")
+        raise RuntimeError(
+            "Could not find Gemini prompt input. UI may have changed — "
+            f"re-run with --auth-cdp or inspect DOM manually. screenshot={shot}"
+        )
+    page.wait_for_timeout(500)
+    if not _try_submit(page):
+        shot = _save_failure_screenshot(page, "submit")
+        raise RuntimeError(
+            f"Could not submit prompt (Send button not found). screenshot={shot}"
+        )
+
+    LOGGER.info(
+        "Waiting for generated image (timeout=%ss)...",
+        generation_timeout_ms // 1000,
+    )
+    img_src = _wait_for_image(page, timeout_ms=generation_timeout_ms)
+    if not img_src:
+        shot = _save_failure_screenshot(page, "generation_timeout")
+        raise RuntimeError(
+            "Timed out waiting for generated image. "
+            f"Try headed mode or verify Gemini Pro image quota. screenshot={shot}"
+        )
+
+    _download_image(page, img_src, output_path)
+    _resize_to_target(output_path)
+    LOGGER.info("Saved thumbnail: %s (headless=%s)", output_path, settings.headless)
+    return True
 
 
 def generate_thumbnail(
@@ -1115,7 +1468,25 @@ def generate_thumbnail(
     image_mode: bool = True,
     aspect_ratio: str = "16:9",
     generation_timeout_ms: int = IMAGE_GEN_TIMEOUT_MS,
+    context: Optional[BrowserContext] = None,
+    page: Optional[Page] = None,
 ) -> bool:
+    """Generate one thumbnail; reuses context/page when provided (batch mode)."""
+    if context is not None and page is not None:
+        return _generate_thumbnail_on_page(
+            settings=settings,
+            context=context,
+            page=page,
+            face_path=face_path,
+            prompt=prompt,
+            output_path=output_path,
+            dry_run=dry_run,
+            image_mode=image_mode,
+            aspect_ratio=aspect_ratio,
+            generation_timeout_ms=generation_timeout_ms,
+            navigate=False,
+        )
+
     if dry_run:
         LOGGER.info(
             "[DRY-RUN] Would generate %s | face=%s | headless=%s",
@@ -1125,46 +1496,20 @@ def generate_thumbnail(
         )
         return True
 
-    with gemini_browser(settings) as (context, page):
-        ensure_session(settings, page, context)
-        page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=90_000)
-        page.wait_for_timeout(2500)
-
-        if image_mode:
-            if not _try_enable_image_mode(page):
-                _save_failure_screenshot(page, "image_mode")
-            page.wait_for_timeout(1000)
-            if not _try_set_aspect_ratio(page, aspect_ratio):
-                _save_failure_screenshot(page, "aspect_ratio")
-
-        if not _try_attach_face(page, face_path):
-            _save_failure_screenshot(page, "attach_face")
-
-        if not _try_set_prompt(page, prompt):
-            shot = _save_failure_screenshot(page, "prompt_input")
-            raise RuntimeError(
-                "Could not find Gemini prompt input. UI may have changed — "
-                f"re-run with --auth-cdp or inspect DOM manually. screenshot={shot}"
-            )
-        page.wait_for_timeout(500)
-        if not _try_submit(page):
-            shot = _save_failure_screenshot(page, "submit")
-            raise RuntimeError(
-                f"Could not submit prompt (Send button not found). screenshot={shot}"
-            )
-
-        img_src = _wait_for_image(page, timeout_ms=generation_timeout_ms)
-        if not img_src:
-            shot = _save_failure_screenshot(page, "generation_timeout")
-            raise RuntimeError(
-                "Timed out waiting for generated image. "
-                f"Try headed mode or verify Gemini Pro image quota. screenshot={shot}"
-            )
-
-        _download_image(page, img_src, output_path)
-        _resize_to_target(output_path)
-        LOGGER.info("Saved thumbnail: %s (headless=%s)", output_path, settings.headless)
-        return True
+    with gemini_browser(settings) as (ctx, pg):
+        return _generate_thumbnail_on_page(
+            settings=settings,
+            context=ctx,
+            page=pg,
+            face_path=face_path,
+            prompt=prompt,
+            output_path=output_path,
+            dry_run=False,
+            image_mode=image_mode,
+            aspect_ratio=aspect_ratio,
+            generation_timeout_ms=generation_timeout_ms,
+            navigate=True,
+        )
 
 
 def run_test_web(
@@ -1175,14 +1520,16 @@ def run_test_web(
     dry_run: bool = False,
     headless: bool = False,
     sniff_network: bool = False,
+    keep_browser_open: bool = False,
 ) -> Path:
     """Single headed browser test — no videos-dir, no API key."""
-    settings = GeminiWebSettings.from_args(headless=headless, sniff_network=sniff_network)
-    if not dry_run and not settings.storage_state.is_file():
-        raise RuntimeError(
-            "Gemini browser session missing. Run:\n"
-            "  python scripts/gemini-thumbnails.py --auth-cdp"
-        )
+    settings = GeminiWebSettings.from_args(
+        headless=headless,
+        sniff_network=sniff_network,
+        keep_browser_open=keep_browser_open,
+    )
+    if not dry_run:
+        _require_storage_state(settings)
 
     dest = output_path or resolve_test_output_path()
     face = _pick_rotated_face(faces_dir)
@@ -1216,8 +1563,9 @@ def run_generation(
     skip_existing: bool = True,
     headless: bool = False,
     sniff_network: bool = False,
+    keep_browser_open: bool = False,
 ) -> list[Path]:
-    faces = _iter_media(faces_dir, IMAGE_EXTENSIONS)
+    validate_faces_dir(faces_dir)
     videos = _iter_media(videos_dir, VIDEO_EXTENSIONS)
     n = count if count is not None else len(videos)
     if n > len(videos):
@@ -1225,34 +1573,73 @@ def run_generation(
         n = len(videos)
 
     selected_videos = videos[:n]
-    selected_faces = assign_faces(faces, n)
+    selected_faces = _assign_faces_rotated(faces_dir, n)
     out_root = output_dir or videos_dir
-    settings = GeminiWebSettings.from_args(headless=headless, sniff_network=sniff_network)
+    settings = GeminiWebSettings.from_args(
+        headless=headless,
+        sniff_network=sniff_network,
+        keep_browser_open=keep_browser_open,
+    )
 
-    if not dry_run and not settings.storage_state.is_file():
-        raise RuntimeError(
-            "Gemini browser session missing. Run:\n"
-            "  python scripts/gemini-thumbnails.py --auth-cdp"
-        )
+    if not dry_run:
+        _require_storage_state(settings)
 
     written: list[Path] = []
-    for idx, (video, face) in enumerate(zip(selected_videos, selected_faces)):
-        dest = _output_path_for_video(video, out_root)
-        if skip_existing and dest.is_file() and not dry_run:
-            LOGGER.info("Skip existing: %s", dest.name)
-            written.append(dest)
-            continue
+    pairs = list(zip(selected_videos, selected_faces))
 
-        prompt = build_prompt(game=game, slot_index=idx, video_stem=video.stem)
-        ok = generate_thumbnail(
-            settings=settings,
-            face_path=face,
-            prompt=prompt,
-            output_path=dest,
-            dry_run=dry_run,
-        )
-        if ok:
+    if dry_run:
+        for idx, (video, face) in enumerate(pairs):
+            dest = _output_path_for_video(video, out_root)
+            if skip_existing and dest.is_file():
+                LOGGER.info("Skip existing: %s", dest.name)
+                written.append(dest)
+                continue
+            prompt = build_prompt(game=game, slot_index=idx, video_stem=video.stem)
+            generate_thumbnail(
+                settings=settings,
+                face_path=face,
+                prompt=prompt,
+                output_path=dest,
+                dry_run=True,
+            )
             written.append(dest)
+        return written
+
+    LOGGER.info(
+        "Batch: one browser session for %s thumbnail(s) (headed=%s, keep_open=%s)",
+        len(pairs),
+        not settings.headless,
+        settings.keep_browser_open,
+    )
+    with gemini_browser(settings) as (context, page):
+        page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=120_000)
+        page.wait_for_timeout(2500)
+        _dismiss_blocking_modals(page)
+        ensure_session(settings, page, context)
+        _dismiss_blocking_modals(page)
+
+        for idx, (video, face) in enumerate(pairs):
+            dest = _output_path_for_video(video, out_root)
+            if skip_existing and dest.is_file():
+                LOGGER.info("Skip existing: %s", dest.name)
+                written.append(dest)
+                continue
+
+            prompt = build_prompt(game=game, slot_index=idx, video_stem=video.stem)
+            LOGGER.info("Generating %s/%s: %s", idx + 1, len(pairs), dest.name)
+            ok = generate_thumbnail(
+                settings=settings,
+                face_path=face,
+                prompt=prompt,
+                output_path=dest,
+                dry_run=False,
+                context=context,
+                page=page,
+            )
+            if ok:
+                written.append(dest)
+            if idx + 1 < len(pairs):
+                page.wait_for_timeout(2000)
 
     return written
 
@@ -1321,7 +1708,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Exact output PNG path (--test-web; default: ~/YOUTUBE/thumbnails_test/...)",
     )
-    p.add_argument("--faces-dir", type=Path, help="Folder with face selfie images")
+    p.add_argument(
+        "--faces-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Thumbnail face reference folder (jpg/png selfies only). "
+            f"Default: FACES_DIR env, .secrets/thumbnail_faces/, or {DEFAULT_FACES_DIR}"
+        ),
+    )
     p.add_argument("--videos-dir", type=Path, help="Folder with MP4 videos")
     p.add_argument("--game", help=f'Game name (known: {", ".join(list_known_games())})')
     p.add_argument("--count", type=int, default=None)
@@ -1330,6 +1725,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--headless",
         action="store_true",
         help="Run without visible window (may be blocked by Google after auth)",
+    )
+    p.add_argument(
+        "--keep-browser-open",
+        action="store_true",
+        help=(
+            "After success in headed mode, wait for ENTER before closing Chrome "
+            "(debug / watch generation finish)"
+        ),
     )
     p.add_argument(
         "--sniff-network",
@@ -1365,7 +1768,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    lock_path = project_secret("gemini_thumbnails.lock")
+    try:
+        with pipeline_lock(lock_path, platform="gemini-thumbnails"):
+            return _main_impl(args)
+    except RuntimeError as exc:
+        LOGGER.error("%s", exc)
+        return 1
 
+
+def _main_impl(args: argparse.Namespace) -> int:
     settings = GeminiWebSettings.from_args(
         headless=args.headless,
         sniff_network=args.sniff_network,
@@ -1373,6 +1785,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         disable_blink_automation=args.disable_blink_automation,
         slow_mo=args.slow_mo,
         auth_cdp_url=args.auth_cdp_url,
+        keep_browser_open=args.keep_browser_open,
     )
 
     if args.auth_cdp:
@@ -1399,33 +1812,44 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0 if status.get("headed_logged_in") else 1
 
     if args.test_web:
-        if not args.faces_dir:
-            LOGGER.error("--test-web requires --faces-dir")
+        try:
+            faces_dir = resolve_faces_dir(args.faces_dir)
+            validate_faces_dir(faces_dir)
+        except (ValueError, FileNotFoundError) as exc:
+            LOGGER.error("%s", exc)
             return 2
         try:
             started = time.time()
             dest = run_test_web(
-                faces_dir=args.faces_dir.resolve(),
+                faces_dir=faces_dir,
                 output_path=args.output_file.resolve() if args.output_file else None,
                 prompt=args.prompt,
                 dry_run=args.dry_run,
                 headless=args.headless,
                 sniff_network=args.sniff_network,
+                keep_browser_open=args.keep_browser_open,
             )
             elapsed = time.time() - started
-            print(f"\nTest OK in {elapsed:.1f}s\nOutput: {dest}\n")
+            attach_method = get_last_attach_method() or "n/a"
+            print(
+                f"\nTest OK in {elapsed:.1f}s\n"
+                f"Output: {dest}\n"
+                f"Face attach selector: {attach_method}\n"
+            )
         except Exception as exc:
-            LOGGER.error("%s", exc)
+            _write_exception_log("test_web", exc)
+            LOGGER.exception("Test web failed: %s", exc)
             return 1
         return 0
 
-    if not args.faces_dir or not args.videos_dir or not args.game:
-        LOGGER.error("--faces-dir, --videos-dir and --game are required for generation.")
+    if not args.videos_dir or not args.game:
+        LOGGER.error("--videos-dir and --game are required for generation.")
         return 2
 
     try:
+        faces_dir = resolve_faces_dir(args.faces_dir)
         paths = run_generation(
-            faces_dir=args.faces_dir.resolve(),
+            faces_dir=faces_dir,
             videos_dir=args.videos_dir.resolve(),
             game=args.game,
             count=args.count,
@@ -1434,9 +1858,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             skip_existing=not args.force,
             headless=args.headless,
             sniff_network=args.sniff_network,
+            keep_browser_open=args.keep_browser_open,
         )
     except Exception as exc:
-        LOGGER.error("%s", exc)
+        _write_exception_log("generation", exc)
+        LOGGER.exception("Generation failed: %s", exc)
         return 1
 
     LOGGER.info(
