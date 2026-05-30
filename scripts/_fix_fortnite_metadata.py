@@ -15,17 +15,27 @@ sys.path.insert(0, str(_SCRIPTS))
 
 from shared.llm_metadata import build_youtube_description, save_metadata_manifest
 from youtube.auth import get_youtube_service
+from youtube.fix_video_metadata import (
+    VideoMetadataSpec,
+    apply_metadata_specs,
+    fetch_video,
+    neutralize_scheduled_duplicate,
+    print_reports_json,
+    reports_to_dict,
+    snippet_summary,
+)
 from youtube.manifest import load_batch_yaml
 from youtube.schedule_db import ScheduleDB
 
 LOGGER = logging.getLogger(__name__)
 
 INBOX = Path.home() / "YOUTUBE" / "inbox" / "fortnite_mobile_20260530"
-HASHTAGS = "#abobicaduco #fortnite #fortnitemobile #gameplay #battleroyale #victoryroyale #mobile"
+HASHTAGS = (
+    "#abobicaduco #fortnite #fortnitemobile #gameplay #battleroyale "
+    "#victoryroyale #mobilegaming"
+)
 CATEGORY_ID = "20"
-DEFAULT_LANGUAGE = "pt"
 
-# Canonical video IDs (from youtube_schedule.db)
 CANONICAL_IDS: dict[str, str] = {
     "fortnite_mobile_01.mp4": "KlmXPQi1aCA",
     "fortnite_mobile_02.mp4": "kw0FXbwlSEY",
@@ -37,6 +47,7 @@ DUPLICATE_02_ID = "3dRr7qHLfwo"
 FIXED = [
     {
         "file": "fortnite_mobile_01.mp4",
+        "part": "01",
         "title": "VITORIA INSANA no Fortnite Mobile - Atualizacao 2026 #01 | abobicaduco",
         "description": (
             "Partida completa no Fortnite Mobile com a atualizacao mais recente.\n"
@@ -51,6 +62,11 @@ FIXED = [
             "battle royale",
             "victory royale",
             "mobile gaming",
+            "vitoria royale",
+            "atualizacao fortnite",
+            "fortnite brasil",
+            "gameplay mobile",
+            "partida completa",
         ],
         "tiktok_title": "VITORIA INSANA no Fortnite Mobile",
         "tiktok_body": (
@@ -60,6 +76,7 @@ FIXED = [
     },
     {
         "file": "fortnite_mobile_02.mp4",
+        "part": "02",
         "title": "CLUTCH IMPOSSIVEL - Fortnite Mobile partida completa #02 | abobicaduco",
         "description": (
             "Quase eliminado e ainda assim virei o round.\n"
@@ -68,16 +85,25 @@ FIXED = [
         ),
         "tags": [
             "fortnite mobile",
+            "fortnite",
             "clutch",
             "gameplay",
             "abobicaduco",
             "battle royale",
+            "victory royale",
+            "mobile gaming",
+            "1v3 clutch",
+            "comeback",
+            "fortnite brasil",
+            "partida completa",
+            "gameplay mobile",
         ],
         "tiktok_title": "CLUTCH no limite — Fortnite Mobile",
         "tiktok_body": "1v3 no final e ainda deu certo. Voce teria tentado?",
     },
     {
         "file": "fortnite_mobile_03.mp4",
+        "part": "03",
         "title": "BUILD FIGHT EPICO no Fortnite Mobile #03 | abobicaduco",
         "description": (
             "Duelo de construcao intenso no mobile.\n"
@@ -86,15 +112,25 @@ FIXED = [
         ),
         "tags": [
             "fortnite mobile",
+            "fortnite",
             "build fight",
             "gameplay",
             "abobicaduco",
+            "battle royale",
+            "victory royale",
+            "mobile gaming",
+            "construcao fortnite",
+            "duelo build",
+            "fortnite brasil",
+            "gameplay mobile",
+            "partida completa",
         ],
         "tiktok_title": "BUILD FIGHT no Fortnite Mobile",
         "tiktok_body": "Parede, rampa e tiro na sequencia. Treino pago.",
     },
     {
         "file": "fortnite_mobile_04.mp4",
+        "part": "04",
         "title": "SOLO VS SQUAD - Fortnite Mobile gameplay longo #04 | abobicaduco",
         "description": (
             "Sozinho contra squad inteira no Fortnite Mobile.\n"
@@ -103,10 +139,18 @@ FIXED = [
         ),
         "tags": [
             "fortnite mobile",
+            "fortnite",
             "solo vs squad",
             "gameplay",
             "abobicaduco",
             "battle royale",
+            "victory royale",
+            "mobile gaming",
+            "squad wipe",
+            "fortnite brasil",
+            "gameplay mobile",
+            "partida completa",
+            "mobile royale",
         ],
         "tiktok_title": "SOLO VS SQUAD no Fortnite Mobile",
         "tiktok_body": "4 contra 1 e o final voce precisa ver ate o fim.",
@@ -116,89 +160,21 @@ FIXED = [
 FIX_BY_FILE = {item["file"]: item for item in FIXED}
 
 
-def _fetch_video(youtube: Any, video_id: str) -> dict[str, Any] | None:
-    resp = youtube.videos().list(part="snippet,status", id=video_id).execute()
-    items = resp.get("items") or []
-    return items[0] if items else None
-
-
-def _update_snippet(
-    youtube: Any,
-    video_id: str,
-    *,
-    title: str,
-    description: str,
-    tags: list[str],
-    category_id: str = CATEGORY_ID,
-    set_language: bool = True,
-    dry_run: bool,
-) -> None:
-    snippet: dict[str, Any] = {
-        "title": title[:100],
-        "description": description[:5000],
-        "categoryId": category_id,
-        "tags": tags[:500],
-    }
-    if set_language:
-        snippet["defaultLanguage"] = DEFAULT_LANGUAGE
-        snippet["defaultAudioLanguage"] = DEFAULT_LANGUAGE
-
-    body = {"id": video_id, "snippet": snippet}
-    if dry_run:
-        print(f"[DRY-RUN] videos.update snippet {video_id} title={title[:50]!r}")
-        return
-    youtube.videos().update(part="snippet", body=body).execute()
-    print(f"OK snippet updated {video_id}")
-
-
-def _patch_language_only(
-    youtube: Any,
-    video_id: str,
-    snippet: dict[str, Any],
-    *,
-    dry_run: bool,
-) -> None:
-    body = {
-        "id": video_id,
-        "snippet": {
-            "title": snippet["title"],
-            "description": snippet["description"],
-            "categoryId": snippet.get("categoryId") or CATEGORY_ID,
-            "tags": snippet.get("tags") or [],
-            "defaultLanguage": DEFAULT_LANGUAGE,
-            "defaultAudioLanguage": DEFAULT_LANGUAGE,
-        },
-    }
-    if dry_run:
-        print(f"[DRY-RUN] videos.update language {video_id}")
-        return
-    youtube.videos().update(part="snippet", body=body).execute()
-    print(f"OK language patched {video_id}")
-
-
-def _neutralize_duplicate_schedule(youtube: Any, video_id: str, *, dry_run: bool) -> None:
-    """Cancel scheduled publish on duplicate — private, no publishAt."""
-    status = {
-        "privacyStatus": "private",
-        "selfDeclaredMadeForKids": False,
-    }
-    if dry_run:
-        print(f"[DRY-RUN] videos.update status {video_id} -> private, no publishAt")
-        return
-    youtube.videos().update(
-        part="status",
-        body={"id": video_id, "status": status},
-    ).execute()
-    print(f"OK duplicate schedule neutralized {video_id}")
-
-
-def _looks_like_granny(snippet: dict[str, Any]) -> bool:
-    desc = (snippet.get("description") or "").lower()
-    tags = [t.lower() for t in (snippet.get("tags") or [])]
-    granny_markers = ("granny", "horror", "terror", "susto")
-    return any(m in desc for m in granny_markers) or any(
-        any(m in t for m in granny_markers) for t in tags
-    )
+def _build_specs() -> list[VideoMetadataSpec]:
+    specs: list[VideoMetadataSpec] = []
+    for item in FIXED:
+        fn = item["file"]
+        specs.append(
+            VideoMetadataSpec(
+                video_id=CANONICAL_IDS[fn],
+                title=item["title"],
+                description_body=item["description"],
+                tags=item["tags"],
+                role=f"canonical #{item['part']} ({fn})",
+                category_id=CATEGORY_ID,
+            )
+        )
+    return specs
 
 
 def sync_local_files() -> None:
@@ -224,9 +200,6 @@ def sync_local_files() -> None:
                 "source": "manual_fix",
             },
         }
-        desc = build_youtube_description(
-            yt["description"], HASHTAGS, append_shorts=batch.append_shorts_hashtag
-        )
     save_metadata_manifest(INBOX / "clips_metadata.json", clips_manifest)
 
     with (INBOX / "manifest.csv").open("w", encoding="utf-8", newline="") as fh:
@@ -251,124 +224,74 @@ def sync_local_files() -> None:
             print(f"DB title updated id={row.id} video_id={row.video_id}")
 
 
-def apply_youtube(*, dry_run: bool) -> dict[str, Any]:
+def apply_youtube(*, dry_run: bool, force: bool) -> dict[str, Any]:
     batch = load_batch_yaml(INBOX / "batch.yaml")
     youtube = get_youtube_service()
-    report: dict[str, Any] = {"videos": {}, "duplicate": {}}
 
-    # --- #02 canonical: full metadata fix ---
-    vid02 = CANONICAL_IDS["fortnite_mobile_02.mp4"]
-    item02 = FIX_BY_FILE["fortnite_mobile_02.mp4"]
-    before02 = _fetch_video(youtube, vid02)
-    if not before02:
-        raise RuntimeError(f"Video not found: {vid02}")
+    def _desc(spec: VideoMetadataSpec) -> str:
+        return build_youtube_description(
+            spec.description_body,
+            HASHTAGS,
+            append_shorts=batch.append_shorts_hashtag,
+        )
 
-    sn_before = before02["snippet"]
-    st_before = before02["status"]
-    report["videos"][vid02] = {
-        "role": "canonical #02",
-        "before": {
-            "title": sn_before.get("title"),
-            "description_preview": (sn_before.get("description") or "")[:120],
-            "tags": sn_before.get("tags"),
-            "defaultLanguage": sn_before.get("defaultLanguage"),
-            "privacy": st_before.get("privacyStatus"),
-            "publishAt": st_before.get("publishAt"),
-        },
-    }
-
-    desc02 = build_youtube_description(
-        item02["description"], HASHTAGS, append_shorts=batch.append_shorts_hashtag
-    )
-    keep_title = sn_before.get("title") or item02["title"]
-    if "CLUTCH" in keep_title.upper() and "#02" in keep_title:
-        title02 = keep_title
-    else:
-        title02 = item02["title"]
-
-    _update_snippet(
+    reports = apply_metadata_specs(
         youtube,
-        vid02,
-        title=title02,
-        description=desc02,
-        tags=item02["tags"],
+        _build_specs(),
+        build_description=_desc,
         dry_run=dry_run,
+        force=force,
+        expected_tag_count_min=10,
+        required_hashtag_substrings=("#mobilegaming",),
     )
+    payload: dict[str, Any] = reports_to_dict(reports)
 
-    after02 = _fetch_video(youtube, vid02) if not dry_run else before02
-    sn_after = after02["snippet"] if after02 else sn_before
-    report["videos"][vid02]["after"] = {
-        "title": title02 if dry_run else sn_after.get("title"),
-        "description_preview": desc02[:120],
-        "tags": item02["tags"],
-        "defaultLanguage": DEFAULT_LANGUAGE,
-        "privacy": st_before.get("privacyStatus"),
-        "publishAt": st_before.get("publishAt"),
-    }
-
-    # --- #01 #03 #04: language patch if missing ---
-    for fn in (
-        "fortnite_mobile_01.mp4",
-        "fortnite_mobile_03.mp4",
-        "fortnite_mobile_04.mp4",
-    ):
-        vid = CANONICAL_IDS[fn]
-        current = _fetch_video(youtube, vid)
-        if not current:
-            report["videos"][vid] = {"error": "not found"}
-            continue
-        sn = current["snippet"]
-        needs_lang = not sn.get("defaultLanguage") or not sn.get("defaultAudioLanguage")
-        entry: dict[str, Any] = {
-            "role": fn,
-            "before": {
-                "defaultLanguage": sn.get("defaultLanguage"),
-                "defaultAudioLanguage": sn.get("defaultAudioLanguage"),
-            },
-            "action": "none",
-        }
-        if needs_lang:
-            _patch_language_only(youtube, vid, sn, dry_run=dry_run)
-            entry["action"] = "language_patch"
-            entry["after"] = {
-                "defaultLanguage": DEFAULT_LANGUAGE,
-                "defaultAudioLanguage": DEFAULT_LANGUAGE,
-            }
-        else:
-            entry["after"] = entry["before"]
-        report["videos"][vid] = entry
-
-    # --- duplicate #02: neutralize schedule (no delete) ---
-    dup = _fetch_video(youtube, DUPLICATE_02_ID)
+    dup = fetch_video(youtube, DUPLICATE_02_ID)
+    dup_report: dict[str, Any] = {"video_id": DUPLICATE_02_ID}
     if dup:
-        sn_d = dup["snippet"]
-        st_d = dup["status"]
-        report["duplicate"] = {
-            "video_id": DUPLICATE_02_ID,
-            "before": {
-                "privacy": st_d.get("privacyStatus"),
-                "publishAt": st_d.get("publishAt"),
-                "has_fortnite_metadata": not _looks_like_granny(sn_d),
-            },
-            "action": "neutralize_schedule",
-            "recommendation": (
-                "Duplicate upload of #02 with correct metadata but same slot. "
-                "Schedule cancelled (private, no publishAt). "
-                "Delete 3dRr7qHLfwo manually in YouTube Studio when ready."
-            ),
-        }
-        _neutralize_duplicate_schedule(youtube, DUPLICATE_02_ID, dry_run=dry_run)
+        sn_d, st_d = dup["snippet"], dup["status"]
+        dup_report["before"] = snippet_summary(sn_d, st_d)
+        dup_report["action"] = "neutralize_schedule"
+        dup_report["recommendation"] = (
+            "Upload duplicado do slot #02 com metadados corretos. "
+            "Mantido private sem publishAt. "
+            "Recomendado: apagar 3dRr7qHLfwo no YouTube Studio apos confirmar kw0FXbwlSEY."
+        )
+        neutralize_scheduled_duplicate(youtube, DUPLICATE_02_ID, dry_run=dry_run)
         if not dry_run:
-            dup_after = _fetch_video(youtube, DUPLICATE_02_ID)
-            st_a = dup_after["status"] if dup_after else {}
-            report["duplicate"]["after"] = {
-                "privacy": st_a.get("privacyStatus"),
-                "publishAt": st_a.get("publishAt"),
-            }
+            dup_after = fetch_video(youtube, DUPLICATE_02_ID)
+            if dup_after:
+                dup_report["after"] = snippet_summary(
+                    dup_after["snippet"], dup_after["status"]
+                )
     else:
-        report["duplicate"] = {"video_id": DUPLICATE_02_ID, "error": "not found"}
+        dup_report["error"] = "not found"
+    payload["duplicate"] = dup_report
+    return payload
 
-    return report
+
+def print_pt_table(payload: dict[str, Any], *, youtube: Any | None = None) -> None:
+    print("\n=== TABELA PT (canonical) ===")
+    print("| video_id | parte | acao | titulo aplicado | tags | mobilegaming |")
+    print("|----------|-------|------|-----------------|------|--------------|")
+    for item in FIXED:
+        vid = CANONICAL_IDS[item["file"]]
+        entry = (payload.get("videos") or {}).get(vid, {})
+        action = entry.get("action", "?")
+        title = item["title"][:100]
+        n_tags = len(item["tags"])
+        has_mobile = False
+        if youtube is not None:
+            current = fetch_video(youtube, vid)
+            if current:
+                sn = current["snippet"]
+                title = sn.get("title") or title
+                n_tags = len(sn.get("tags") or [])
+                has_mobile = "#mobilegaming" in (sn.get("description") or "").lower()
+        print(
+            f"| {vid} | #{item['part']} | {action} | {title[:65]} | {n_tags} | "
+            f"{'sim' if has_mobile else 'nao'} |"
+        )
 
 
 def main() -> int:
@@ -385,6 +308,11 @@ def main() -> int:
         help="With --apply-youtube, log actions without API writes",
     )
     p.add_argument(
+        "--force",
+        action="store_true",
+        help="Update all canonical snippets even if already OK",
+    )
+    p.add_argument(
         "--skip-local",
         action="store_true",
         help="Skip clips_metadata.json, manifest.csv, and DB title sync",
@@ -395,9 +323,11 @@ def main() -> int:
         sync_local_files()
 
     if args.apply_youtube:
-        report = apply_youtube(dry_run=args.dry_run)
+        report = apply_youtube(dry_run=args.dry_run, force=args.force)
         print("\n=== REPORT ===")
-        print(json.dumps(report, indent=2, ensure_ascii=False))
+        print_reports_json(report)
+        yt_svc = None if args.dry_run else get_youtube_service()
+        print_pt_table(report, youtube=yt_svc)
 
     return 0
 
